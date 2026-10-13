@@ -1,6 +1,6 @@
 // The signed-in shell: top bar (who you are, log out), navigation rail, and the page.
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { KeyRound, LogOut, MessageSquareText, ScrollText, Server, ShieldBan, Store, Users, type LucideIcon } from 'lucide-react';
+import { Activity, KeyRound, LogOut, MessageSquareText, ScrollText, Server, ShieldBan, Store, Users, type LucideIcon } from 'lucide-react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router';
 import { logout } from '../api/endpoints';
 import { queryKeys, useConfig } from '../api/queries';
@@ -24,6 +24,7 @@ const MAIN_NAV: NavItem[] = [
 const ADMIN_NAV: NavItem[] = [
   { to: '/members', label: 'Members', icon: Users },
   { to: '/policies', label: 'Tool policies', icon: ShieldBan },
+  { to: '/observability', label: 'Observability', icon: Activity },
 ];
 
 export function AppLayout() {

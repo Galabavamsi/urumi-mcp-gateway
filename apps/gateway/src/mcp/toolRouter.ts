@@ -6,10 +6,10 @@ import type { AuditLog, AuditTarget } from '../audit/auditLog.ts';
 import { buildCatalog, type Catalog, type CatalogEntry, type ExposedTool } from '../catalog/catalog.ts';
 import { canonicalJson, sha256Hex } from '../crypto/hashing.ts';
 import { errorForLog } from '../db/errors.ts';
-import type { AuditStatus } from '../db/schema.ts';
 import type { GatewayMetrics } from '../metrics.ts';
 import { isToolDenied, type ToolPolicy } from '../policies/policy.ts';
 import { ToolRateLimiter } from '../policies/rateLimit.ts';
+import { TOOL_REPORTED_ERROR, type CallStatus, type StatsCollector } from '../stats/collector.ts';
 import type { Principal } from '../types.ts';
 import { shortMessage } from '../upstreams/errors.ts';
 import type { UpstreamManager } from '../upstreams/manager.ts';
@@ -24,6 +24,8 @@ export interface ToolRouterDeps {
   defaultTimeoutMs: number;
   /** Per-user tool-call limits; tests pass one with a fake clock. */
   rateLimiter?: ToolRateLimiter;
+  /** Per-server call statistics for the dashboard (GET /api/stats); optional so unit tests can leave it out. */
+  stats?: StatsCollector;
 }
 
 export class ToolRouter {
@@ -123,14 +125,16 @@ export class ToolRouter {
     const auditId = await this.deps.audit.begin(principal, target, argsHash);
     const timeoutMs = this.deps.manager.get(entry.serverId)?.row.timeoutMs ?? this.deps.defaultTimeoutMs;
     const started = performance.now();
-    let status: Exclude<AuditStatus, 'pending'> = 'error';
+    let status: CallStatus = 'error';
     let error: string | null = null;
+    let toolReportedError = false;
     this.inFlight += 1;
     try {
       const outcome = await this.deps.manager.callTool(entry.serverId, entry.originalName, args, { timeoutMs, signal });
       if (outcome.ok) {
         status = outcome.result.isError ? 'error' : 'ok';
         if (outcome.result.isError) error = shortMessage(firstText(outcome.result) || 'the tool reported an error');
+        toolReportedError = outcome.result.isError === true;
         return capResult(outcome.result);
       }
       status = outcome.status;
@@ -146,6 +150,9 @@ export class ToolRouter {
       const durationMs = Math.round(performance.now() - started);
       this.deps.metrics.toolCalls.inc({ server: entry.serverSlug, tool: exposedName, status });
       this.deps.metrics.toolCallDuration.observe({ server: entry.serverSlug }, durationMs / 1000);
+      // The tool's own error text stays in the audit log: it can repeat the caller's arguments.
+      const reason = toolReportedError ? TOOL_REPORTED_ERROR : error;
+      this.deps.stats?.recordCall({ server: entry.serverSlug, tool: entry.originalName, status, durationMs, error: reason });
       log('info', 'tool call', { user: principal.userId, via: principal.via, tool: exposedName, status, ms: durationMs });
       await this.deps.audit
         .complete(auditId, { status, durationMs, error })
@@ -156,6 +163,7 @@ export class ToolRouter {
 
   private async reject(principal: Principal, target: AuditTarget, argsHash: string, why: string) {
     this.deps.metrics.toolCalls.inc({ server: target.serverSlug, tool: target.exposedName, status: 'denied' });
+    this.deps.stats?.recordCall({ server: target.serverSlug, tool: target.tool, status: 'denied', durationMs: 0, error: why });
     log('info', 'tool call denied', { user: principal.userId, via: principal.via, tool: target.exposedName, why });
     await this.deps.audit.record({
       via: principal.via,

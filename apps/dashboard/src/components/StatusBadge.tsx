@@ -11,6 +11,10 @@ const SERVER_STATUS: Record<ServerStatus, { label: string; text: string; bg: str
   disabled: { label: 'Disabled', text: 'text-off', bg: 'bg-off-soft', lamp: 'bg-off-lamp', ring: 'ring-off-soft' },
 };
 
+export const SERVER_STATUS_LABELS = Object.fromEntries(
+  Object.entries(SERVER_STATUS).map(([status, { label }]) => [status, label]),
+) as Record<ServerStatus, string>;
+
 /** The switchboard lamp. It blinks only while connecting (and not at all with reduced motion). */
 export function Lamp({ status }: { status: ServerStatus }) {
   const style = SERVER_STATUS[status];

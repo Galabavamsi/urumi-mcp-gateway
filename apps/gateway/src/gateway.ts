@@ -22,6 +22,7 @@ import { ToolRouter } from './mcp/toolRouter.ts';
 import { GatewayMetrics } from './metrics.ts';
 import { createUpstreamFetch, type Resolver } from './security/ssrf.ts';
 import { bootstrapAdmin, seedDefaultPolicies, seedServers } from './seed/startup.ts';
+import { StatsCollector } from './stats/collector.ts';
 import { UpstreamManager } from './upstreams/manager.ts';
 
 export interface GatewayOptions {
@@ -45,6 +46,8 @@ export function createGateway(config: Config, options: GatewayOptions) {
   const chatTokens = new ChatTokens(config.chatJwtKey);
   const sessions = new DbSessionStore(db, config.sessionSecret);
   const streams = new OpenStreams();
+  // In-memory per-server call statistics and status history for the dashboard (GET /api/stats); one replica.
+  const stats = new StatsCollector();
 
   const manager = new UpstreamManager({
     db,
@@ -54,8 +57,9 @@ export function createGateway(config: Config, options: GatewayOptions) {
     healthIntervalMs: config.healthIntervalMs,
     externalHealthIntervalMs: options.externalHealthIntervalMs,
     metrics,
+    stats,
   });
-  const router = new ToolRouter({ manager, audit, metrics, defaultTimeoutMs: config.defaultCallTimeoutMs });
+  const router = new ToolRouter({ manager, audit, metrics, stats, defaultTimeoutMs: config.defaultCallTimeoutMs });
 
   // Two MCP listeners (public + internal) over the same router. Any change that can alter a tool list is pushed to
   // the subscriptions/listen streams of both.
@@ -100,7 +104,7 @@ export function createGateway(config: Config, options: GatewayOptions) {
   publicApp.get('/readyz', async (c) =>
     !draining && (await pingDatabase(database.sql)) ? c.text('ready') : c.text('not ready', 503),
   );
-  publicApp.route('/api', createApiApp(apiDeps, chatDeps));
+  publicApp.route('/api', createApiApp(apiDeps, chatDeps, stats));
   const apiKeys = new ApiKeyAuthenticator({ db, pepper: config.apiKeyPepper, audit, metrics });
   publicApp.route('/', mcpRoutes({ handler: publicMcp, authenticate: (h) => apiKeys.authenticate(h), streams }));
   publicApp.notFound((c) => c.json(errorBody('not_found', 'not found'), 404));
@@ -147,5 +151,5 @@ export function createGateway(config: Config, options: GatewayOptions) {
     await database.close();
   }
 
-  return { config, publicApp, internalApp, metrics, manager, router, audit, chatTokens, db, start, beginDrain, stop };
+  return { config, publicApp, internalApp, metrics, stats, manager, router, audit, chatTokens, db, start, beginDrain, stop };
 }

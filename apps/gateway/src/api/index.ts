@@ -4,6 +4,7 @@ import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { createChatRoutes, type ChatDeps } from '../chat/index.ts';
 import { csrfGuard, requireSession } from '../auth/middleware.ts';
+import type { StatsCollector } from '../stats/collector.ts';
 import type { AppEnv } from '../types.ts';
 import { auditRoutes } from './auditRoutes.ts';
 import { authRoutes } from './authRoutes.ts';
@@ -13,9 +14,10 @@ import { inviteRoutes } from './inviteRoutes.ts';
 import { keyRoutes } from './keyRoutes.ts';
 import { policyRoutes } from './policyRoutes.ts';
 import { serverRoutes } from './serverRoutes.ts';
+import { statsRoutes } from './statsRoutes.ts';
 import { userRoutes } from './userRoutes.ts';
 
-export function createApiApp(deps: ApiDeps, chat: ChatDeps): Hono<AppEnv> {
+export function createApiApp(deps: ApiDeps, chat: ChatDeps, stats: StatsCollector): Hono<AppEnv> {
   const api = new Hono<AppEnv>();
 
   api.use('*', async (c, next) => {
@@ -37,6 +39,7 @@ export function createApiApp(deps: ApiDeps, chat: ChatDeps): Hono<AppEnv> {
   api.route('/servers', serverRoutes(deps));
   api.route('/policies', policyRoutes(deps));
   api.route('/audit', auditRoutes(deps));
+  api.route('/stats', statsRoutes(deps, stats));
 
   api.get('/config', requireSession(deps.sessions, deps.config.cookieSecure), (c) =>
     c.json({

@@ -15,6 +15,7 @@ export const queryKeys = {
   keys: (userId?: string) => ['keys', userId ?? 'mine'] as const,
   allKeys: ['keys'] as const,
   audit: (filters: object) => ['audit', filters] as const,
+  stats: ['stats'] as const,
 };
 
 /** How often the servers page re-reads status, so a killed pod shows as unreachable within seconds. */
@@ -45,6 +46,16 @@ export function useServers(options: { poll?: boolean } = {}) {
     queryKey: queryKeys.servers,
     queryFn: endpoints.listServers,
     refetchInterval: options.poll ? SERVER_POLL_MS : false,
+  });
+}
+
+/** Live per-server statistics (admins only: pass `enabled: false` for members, who would get 403). */
+export function useStats(options: { enabled?: boolean } = {}) {
+  return useQuery({
+    queryKey: queryKeys.stats,
+    queryFn: endpoints.getStats,
+    enabled: options.enabled ?? true,
+    refetchInterval: SERVER_POLL_MS,
   });
 }
 

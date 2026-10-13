@@ -3,11 +3,11 @@ import { ChevronRight, CircleAlert, Pencil, RefreshCw, Trash } from 'lucide-reac
 import { useId, useState, type ReactNode } from 'react';
 import { refreshServer, updateServer } from '../../api/endpoints';
 import { queryKeys } from '../../api/queries';
-import type { ServerStatus, UpstreamServer } from '../../api/types';
+import type { ServerStatus, StatusTransition, UpstreamServer } from '../../api/types';
 import { Switch } from '../../components/Controls';
 import { ErrorNote } from '../../components/Feedback';
 import { Lamp, ServerStatusBadge } from '../../components/StatusBadge';
-import { formatDateTime, formatRelative, plural } from '../../lib/format';
+import { formatAuditTime, formatDateTime, formatRelative, plural } from '../../lib/format';
 import { ToolTable } from './ToolTable';
 import { hiddenReason } from './toolReason';
 
@@ -27,11 +27,13 @@ const ERA_LABEL = {
 interface Props {
   server: UpstreamServer;
   isAdmin: boolean;
+  /** The status change that started the current status (admins only: from GET /api/stats). */
+  statusSince?: StatusTransition | null;
   onEdit: () => void;
   onDelete: () => void;
 }
 
-export function ServerRow({ server, isAdmin, onEdit, onDelete }: Props) {
+export function ServerRow({ server, isAdmin, statusSince, onEdit, onDelete }: Props) {
   const queryClient = useQueryClient();
   const toolsId = useId();
   const [showTools, setShowTools] = useState(false);
@@ -74,7 +76,15 @@ export function ServerRow({ server, isAdmin, onEdit, onDelete }: Props) {
           {showReason && (
             <p className={`mt-2 flex items-start gap-1.5 text-sm ${server.status === 'unreachable' ? 'text-bad' : 'text-ink-2'}`}>
               <CircleAlert aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
-              <span className="break-words">{server.statusReason}</span>
+              <span className="break-words">
+                {server.statusReason}
+                {server.status === 'unreachable' && statusSince && (
+                  <span className="text-ink-2" title={formatDateTime(statusSince.at)}>
+                    {' '}
+                    (since {formatAuditTime(statusSince.at)}, {formatRelative(statusSince.at)})
+                  </span>
+                )}
+              </span>
             </p>
           )}
 

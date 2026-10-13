@@ -14,6 +14,7 @@ import type {
   Policy,
   PolicyInput,
   Role,
+  StatsReport,
   UpdateServerInput,
   UpstreamServer,
   User,
@@ -144,6 +145,13 @@ export function listAudit(filters: AuditFilters, before?: string): Promise<Audit
   }
   if (before) params.set('before', before);
   return api(`/api/audit?${params.toString()}`);
+}
+
+// ---- observability ----
+
+/** Admins only (members get 403). */
+export function getStats(): Promise<StatsReport> {
+  return api('/api/stats');
 }
 
 // ---- misc ----

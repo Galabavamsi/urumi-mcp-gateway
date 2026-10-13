@@ -147,6 +147,65 @@ export interface AuditFilters {
   via?: AuditVia;
 }
 
+// ---- observability (GET /api/stats, admins only) ----
+
+/** How a tool call that did not end ok ended. */
+export type CallErrorStatus = 'error' | 'timeout' | 'unreachable' | 'denied';
+
+export interface PeriodStats {
+  /** Every call addressed to the server, including the ones the gateway refused. */
+  calls: number;
+  errors: Record<CallErrorStatus, number>;
+  /** (error + timeout + unreachable) / (calls - denied), 0..1; null when nothing was tried. */
+  errorRate: number | null;
+  /** Estimated from a bucketed histogram; null without timed calls. */
+  p50Ms: number | null;
+  p95Ms: number | null;
+}
+
+export interface MinutePoint {
+  start: string;
+  calls: number;
+  /** error + timeout + unreachable. */
+  failed: number;
+}
+
+export interface StatusTransition {
+  at: string;
+  /** null for the first status the gateway process saw. */
+  from: ServerStatus | null;
+  to: ServerStatus;
+  reason: string | null;
+  protocolEra: 'modern' | 'legacy' | null;
+}
+
+export interface ServerStats {
+  slug: string;
+  name: string;
+  enabled: boolean;
+  status: ServerStatus;
+  statusReason: string | null;
+  protocolEra: 'modern' | 'legacy' | null;
+  lastCheckedAt: string | null;
+  lastOkAt: string | null;
+  /** Newest first, at most 20. */
+  transitions: StatusTransition[];
+  /** The current minute and the ones before it (windowMinutes in all). */
+  window: PeriodStats & { perMinute: MinutePoint[] };
+  sinceStart: PeriodStats;
+  /** Most-called tools since the gateway started; `errors` = calls that did not end ok. */
+  topTools: Array<{ tool: string; calls: number; errors: number }>;
+  lastError: { at: string; tool: string; status: CallErrorStatus; message: string } | null;
+}
+
+export interface StatsReport {
+  generatedAt: string;
+  /** When the gateway process started counting; the numbers reset on every restart. */
+  startedAt: string;
+  windowMinutes: number;
+  servers: ServerStats[];
+}
+
 export interface PlatformConfig {
   mcpUrl: string;
   storeUrl: string;
