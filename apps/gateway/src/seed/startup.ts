@@ -62,7 +62,8 @@ export interface SeedOptions {
  *   - a seed is inserted only if NO row ever had its slug (soft-deleted rows count), so an admin's delete or edit
  *     survives restarts;
  *   - the credential of an existing seeded server is re-synced from its env var on every start (the Secret is the
- *     source of truth: rotate = update the Secret + restart);
+ *     source of truth: rotate = update the Secret + restart), but only while the row still points where the seed
+ *     says (same URL, auth type and header); a server an admin re-pointed keeps the credential they entered;
  *   - a seed whose env var is unset or empty is skipped.
  */
 export async function seedServers(opts: SeedOptions): Promise<void> {
@@ -104,6 +105,10 @@ export async function seedServers(opts: SeedOptions): Promise<void> {
       log('info', 'seed server was deleted by an admin; not recreated', { slug: seed.slug });
     } else if (!existing.managed) {
       log('warn', 'seed slug is taken by an admin-created server; seed ignored', { slug: seed.slug });
+    } else if (secret && !pointsAtSeed(existing, seed)) {
+      // An admin re-pointed this server (another URL or auth header). The Secret's value belongs to the seed's
+      // destination, so it is not copied there: credentials never follow a destination change (api/serverRoutes.ts).
+      log('warn', 'seed server was re-pointed by an admin; credential not re-synced', { slug: seed.slug });
     } else if (secret) {
       await opts.db
         .update(upstreamServers)
@@ -112,6 +117,12 @@ export async function seedServers(opts: SeedOptions): Promise<void> {
       log('info', 'seed server credential re-synced from its Secret', { slug: seed.slug });
     }
   }
+}
+
+/** True while a seeded row still sends its credential where the seed file says (same URL, auth type and header). */
+function pointsAtSeed(row: { url: string; authType: string; headerName: string | null }, seed: z.infer<typeof SeedServer>): boolean {
+  const seedHeader = seed.auth.type === 'header' ? seed.auth.headerName : null;
+  return row.url === seed.url && row.authType === seed.auth.type && row.headerName === seedHeader;
 }
 
 const POLICIES_SEEDED = 'default_policies_seeded';

@@ -1,10 +1,11 @@
 // The signed-in shell: top bar (who you are, log out), navigation rail, and the page.
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { KeyRound, LogOut, MessageSquareText, ScrollText, Server, ShieldBan, Store, Users, type LucideIcon } from 'lucide-react';
-import { NavLink, Outlet, useNavigate } from 'react-router';
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router';
 import { logout } from '../api/endpoints';
 import { queryKeys, useConfig } from '../api/queries';
 import { useCurrentUser } from '../auth/session';
+import { ErrorBoundary } from '../components/ErrorBoundary';
 import { RoleTag } from '../components/StatusBadge';
 
 interface NavItem {
@@ -30,6 +31,7 @@ export function AppLayout() {
   const config = useConfig();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const location = useLocation();
 
   const signOut = useMutation({
     mutationFn: logout,
@@ -102,7 +104,9 @@ export function AppLayout() {
 
         <main id="main" className="min-w-0 flex-1 px-4 py-6 md:px-8 md:py-8">
           <div className="mx-auto max-w-[1180px]">
-            <Outlet />
+            <ErrorBoundary resetKey={location.pathname}>
+              <Outlet />
+            </ErrorBoundary>
           </div>
         </main>
       </div>

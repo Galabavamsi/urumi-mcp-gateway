@@ -4,7 +4,9 @@
 //
 // Stored format: `v1:` + base64(iv[12] | authTag[16] | ciphertext). The version prefix leaves room for key rotation.
 // AAD (additional authenticated data) = the server's id: a ciphertext copied onto another server's row fails to
-// decrypt, so nobody with database write access can move the Firecrawl key onto a server they control.
+// decrypt. It does NOT stop someone with database write access from changing a row's url (they could also just
+// create an admin user, so database write access is out of scope). Destination changes are guarded at the API
+// instead: a new URL origin or auth header needs the credential typed in again (api/serverRoutes.ts PATCH).
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 
 const VERSION = 'v1:';

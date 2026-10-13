@@ -1,10 +1,11 @@
 // /api/users (admins): list members, change role, disable/enable. Disabling a user revokes all of their API keys
-// and logs them out everywhere, immediately.
-import { and, asc, eq, isNull } from 'drizzle-orm';
+// and logs them out everywhere, immediately. An admin who loses admin rights (disabled or demoted) also loses the
+// keys they issued for other people and their open invites.
+import { and, asc, eq, isNull, ne } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { requireAdmin, requireSession } from '../auth/middleware.ts';
-import { apiKeys, sessions, users } from '../db/schema.ts';
+import { apiKeys, invites, sessions, users } from '../db/schema.ts';
 import type { AppEnv } from '../types.ts';
 import type { ApiDeps } from './deps.ts';
 import { userDto } from './dto.ts';
@@ -28,7 +29,7 @@ export function userRoutes(deps: ApiDeps): Hono<AppEnv> {
     const id = uuidParam(c);
     const body = await readJson(c, PatchUser);
 
-    const { before, after } = await db.transaction(async (tx) => {
+    const { before, after, revokedForOthers } = await db.transaction(async (tx) => {
       // Lock the active admins first: two admins demoting each other at the same moment must not both succeed.
       const activeAdmins = await tx
         .select({ id: users.id })
@@ -49,11 +50,25 @@ export function userRoutes(deps: ApiDeps): Hono<AppEnv> {
         await tx.update(apiKeys).set({ revokedAt: new Date() }).where(and(eq(apiKeys.userId, id), isNull(apiKeys.revokedAt)));
         await tx.delete(sessions).where(eq(sessions.userId, id));
       }
-      return { before: target, after: updated };
+      // An admin who is disabled or demoted must not keep admin power through things they handed out: they saw the
+      // full secret of every key they issued for someone else, and still hold the links of their open invites
+      // (an admin invite to a throwaway address would bring them back). Keys the members made themselves stay.
+      let revokedForOthers: string[] = [];
+      if (wasActiveAdmin && !staysActiveAdmin) {
+        await tx.delete(invites).where(and(eq(invites.createdBy, id), isNull(invites.acceptedAt)));
+        const revoked = await tx
+          .update(apiKeys)
+          .set({ revokedAt: new Date() })
+          .where(and(eq(apiKeys.createdBy, id), ne(apiKeys.userId, id), isNull(apiKeys.revokedAt)))
+          .returning({ id: apiKeys.id });
+        revokedForOthers = revoked.map((key) => key.id);
+      }
+      return { before: target, after: updated, revokedForOthers };
     });
     if (!after) throw notFound('user');
 
     if (after.status === 'disabled' && before.status !== 'disabled') deps.streams.closeForUser(id);
+    for (const keyId of revokedForOthers) deps.streams.closeForKey(keyId); // their open notification streams end too
     if (after.role !== before.role) deps.notifyToolsChanged(); // their allowed tool set just changed
     return c.json({ user: userDto(after) });
   });

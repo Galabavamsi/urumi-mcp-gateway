@@ -13,6 +13,7 @@ const woo: CatalogServer = {
   id: 'id-woo',
   slug: 'woo',
   enabled: true,
+  inCluster: true,
   toolAllowlist: null,
   tools: [tool('list_products'), tool('create_product', { annotations: { destructiveHint: true } })],
 };
@@ -20,6 +21,7 @@ const supplier: CatalogServer = {
   id: 'id-sup',
   slug: 'supplier',
   enabled: true,
+  inCluster: true,
   toolAllowlist: null,
   tools: [tool('list_products'), tool('check_stock')],
 };
@@ -65,5 +67,43 @@ describe('buildCatalog', () => {
     const catalog = buildCatalog([{ ...woo, tools: [tool('get.order'), tool('get_order')] }]);
     expect(catalog.listed.map((e) => [e.exposedName, e.originalName])).toEqual([['woo__get_order', 'get.order']]);
     expect(catalog.exposure.get('id-woo')?.get('get_order')).toBeNull();
+  });
+});
+
+describe('buildCatalog: untrusted upstream text inside schemas and annotations', () => {
+  const schemaWith = (properties: Record<string, unknown>) => ({ type: 'object' as const, properties });
+  const exposedSchema = (server: CatalogServer, name: string) => buildCatalog([server]).byExposedName.get(name)?.tool.inputSchema;
+
+  it('cleans property descriptions and titles, but never property names or values', () => {
+    const inputSchema = schemaWith({
+      sku: { type: 'string', title: 'S\u200bKU', description: `Product code\u200b\u{E0049}\u{E0047}. ${'x'.repeat(3000)}` },
+      // A property literally NAMED "description": an object, walked into, and kept.
+      description: { type: 'string', description: 'The product text\u202e', enum: ['short', 'long'] },
+    });
+    const schema = exposedSchema({ ...woo, tools: [tool('create_product', { inputSchema })] }, 'woo__create_product') as any;
+    expect(schema.properties.sku.title).toBe('SKU');
+    expect(schema.properties.sku.description.startsWith('Product code. xxx')).toBe(true);
+    expect(Array.from(schema.properties.sku.description as string)).toHaveLength(1500);
+    expect(schema.properties.description).toEqual({ type: 'string', description: 'The product text', enum: ['short', 'long'] });
+  });
+
+  it('does not expose a tool whose schema is too large, or has invisible characters it could not clean', () => {
+    const huge = schemaWith({ blob: { type: 'string', default: 'z'.repeat(40_000) } });
+    const hiddenEnum = schemaWith({ mode: { type: 'string', enum: ['fast\u200b'] } });
+    const catalog = buildCatalog([{ ...woo, tools: [tool('huge', { inputSchema: huge }), tool('sneaky', { inputSchema: hiddenEnum }), tool('fine')] }]);
+    expect(catalog.listed.map((e) => e.exposedName)).toEqual(['woo__fine']);
+    expect(catalog.exposure.get('id-woo')?.get('huge')).toBeNull();
+    expect(catalog.exposure.get('id-woo')?.get('sneaky')).toBeNull();
+  });
+
+  it("keeps only the four MCP hints from our own servers, and gives a third-party server's tools the worst case", () => {
+    const annotations = { readOnlyHint: true, destructiveHint: false, openWorldHint: false, title: 'Lists\u200b', vendorFlag: 'trust me' };
+    const own = buildCatalog([{ ...woo, tools: [tool('list_products', { annotations })] }]).byExposedName.get('woo__list_products');
+    expect(own?.tool.annotations).toEqual({ title: 'Lists', readOnlyHint: true, destructiveHint: false, openWorldHint: false });
+    const thirdParty = buildCatalog([{ ...woo, inCluster: false, tools: [tool('list_products', { annotations })] }]).byExposedName.get(
+      'woo__list_products',
+    );
+    expect(thirdParty?.tool.annotations).toEqual({ title: 'Lists', readOnlyHint: false, destructiveHint: true, openWorldHint: true });
+    expect(thirdParty?.serverInCluster).toBe(false);
   });
 });

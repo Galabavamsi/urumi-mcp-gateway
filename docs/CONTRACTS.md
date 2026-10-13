@@ -252,13 +252,22 @@ Images: `urumi/gateway:<tag>` (`docker/node-service.Dockerfile --build-arg APP=g
 ]
 ```
  (the gateway refuses others, so a seed file can never read a core variable such as `API_KEY_PEPPER`).
-Exception: a seed's **credential** is re-synced from its env var on every start (the Secret is the source of truth, so rotation = update Secret + restart).
+Exception: a seed's **credential** is re-synced from its env var on every start (the Secret is the source of truth, so rotation = update Secret + restart),
+but only while the row still points where the seed says (same URL, auth type and header name). A seed server an admin re-pointed keeps the
+credential the admin entered, and the start logs `seed server was re-pointed by an admin; credential not re-synced`.
 A seed whose `secretEnv` is unset/empty is skipped with a log line.
 
 ### Tool exposure rules
 Exposed name = `<slug>__<toolName>` (slug `^[a-z][a-z0-9-]{1,11}$`, immutable; tool name sanitized to `[A-Za-z0-9_-]`; total ≤ 48 chars,
 overflow → first 41 chars + `_` + 6 hex of sha256). Routing uses a lookup table `exposedName → (serverId, originalName)`, never string splitting.
 Description shown to models = `[<slug>] ` + upstream description with control/zero-width/bidi/tag characters removed, capped at 1500 chars.
+Input schema = the upstream's own, with every `description` (cap 1500) and `title` (cap 200) string inside it cleaned the same way; names,
+`enum`, `const`, `default` and `pattern` values are never changed (the upstream validates against them). A tool is **not exposed** (warning
+logged with server and tool name only) when its schema is over 32 KB of JSON or still holds invisible characters after cleaning.
+Annotations = only `readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint` (booleans) and a cleaned `title`. Hints are trusted
+only from in-cluster servers (host in `INTERNAL_HOST_ALLOWLIST`); every third-party tool gets `readOnlyHint: false, destructiveHint: true,
+openWorldHint: true`. The chat agent asks the user before any tool whose hints say destructive or outbound (`apps/gateway/src/chat/confirm.ts`).
+A description or schema text with phrases typical of prompt injection is flagged (`suspicious` in the API, a warning in the log), not removed.
 
 ## NetworkPolicy behaviour on k3s (kube-router)
 A blocked connection is **refused** (ECONNREFUSED in a few ms), not dropped, so callers never wait for a

@@ -21,16 +21,14 @@ export function authRoutes(deps: ApiDeps): Hono<AppEnv> {
 
   routes.post('/login', async (c) => {
     const { email, password } = await readJson(c, LoginBody);
-    if (loginThrottle.isBlocked(email)) {
-      throw new ApiError(429, 'too_many_attempts', 'too many failed logins for this email; try again in 15 minutes');
+    // Counted before any await, so parallel requests cannot all slip past the limit (see auth/loginThrottle.ts).
+    if (!loginThrottle.tryAttempt(email)) {
+      throw new ApiError(429, 'too_many_attempts', 'too many login attempts for this email; try again in 15 minutes');
     }
     const [user] = await db.select().from(users).where(eq(users.email, email));
     // Unknown emails still pay for one scrypt run, so timing does not reveal which accounts exist.
     const valid = user ? await verifyPassword(password, user.passwordHash) : await verifyAgainstDecoy(password);
-    if (!user || !valid) {
-      loginThrottle.recordFailure(email);
-      throw new ApiError(401, 'invalid_credentials', 'wrong email or password');
-    }
+    if (!user || !valid) throw new ApiError(401, 'invalid_credentials', 'wrong email or password');
     if (user.status !== 'active') throw new ApiError(403, 'account_disabled', 'this account has been disabled');
 
     loginThrottle.reset(email);

@@ -111,8 +111,10 @@ spec:
   volumeClaimTemplates:
     - metadata:
         name: data
+        # Only labels that never change: volumeClaimTemplates cannot be updated, so a label carrying the chart
+        # version (helm.sh/chart) would make every chart version bump fail with "updates ... are forbidden".
         labels:
-          {{- include "platform.labels" (dict "root" . "component" "postgres") | nindent 10 }}
+          {{- include "platform.podLabels" (dict "root" . "component" "postgres") | nindent 10 }}
       spec:
         accessModes: ["ReadWriteOnce"]
         {{- with $pg.persistence.storageClass }}

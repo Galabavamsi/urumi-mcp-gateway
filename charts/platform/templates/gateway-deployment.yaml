@@ -116,8 +116,9 @@ spec:
             - name: {{ $envName }}
               value: {{ $value | toString | quote }}
             {{- end }}
-          # Started = the HTTP server answers /healthz. Generous (2 minutes) because a first start waits
-          # for Postgres and runs the migrations; after that, liveness takes over.
+          # Started = the HTTP server answers /healthz. Generous (2 minutes) because before it listens the
+          # gateway waits up to 90 s for Postgres (a fresh install starts both together and Postgres runs initdb
+          # first; src/db/client.ts waitForPostgres) and runs the migrations; after that, liveness takes over.
           startupProbe:
             httpGet:
               path: /healthz

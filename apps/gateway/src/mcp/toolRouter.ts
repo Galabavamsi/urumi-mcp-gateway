@@ -5,9 +5,11 @@ import { log } from '@urumi/mcp-common';
 import type { AuditLog, AuditTarget } from '../audit/auditLog.ts';
 import { buildCatalog, type Catalog, type CatalogEntry, type ExposedTool } from '../catalog/catalog.ts';
 import { canonicalJson, sha256Hex } from '../crypto/hashing.ts';
+import { errorForLog } from '../db/errors.ts';
 import type { AuditStatus } from '../db/schema.ts';
 import type { GatewayMetrics } from '../metrics.ts';
 import { isToolDenied, type ToolPolicy } from '../policies/policy.ts';
+import { ToolRateLimiter } from '../policies/rateLimit.ts';
 import type { Principal } from '../types.ts';
 import { shortMessage } from '../upstreams/errors.ts';
 import type { UpstreamManager } from '../upstreams/manager.ts';
@@ -20,22 +22,28 @@ export interface ToolRouterDeps {
   audit: AuditLog;
   metrics: GatewayMetrics;
   defaultTimeoutMs: number;
+  /** Per-user tool-call limits; tests pass one with a fake clock. */
+  rateLimiter?: ToolRateLimiter;
 }
 
 export class ToolRouter {
   private catalog: Catalog = buildCatalog([]);
   private policies: ToolPolicy[] = [];
   private inFlight = 0;
+  private readonly rateLimiter: ToolRateLimiter;
 
-  constructor(private readonly deps: ToolRouterDeps) {}
+  constructor(private readonly deps: ToolRouterDeps) {
+    this.rateLimiter = deps.rateLimiter ?? new ToolRateLimiter();
+  }
 
   /** Rebuilds the catalog from the manager's current servers (called on every catalog change). */
   rebuildCatalog(): void {
     this.catalog = buildCatalog(
-      this.deps.manager.snapshot().map(({ row, state }) => ({
+      this.deps.manager.snapshot().map(({ row, state, inCluster }) => ({
         id: row.id,
         slug: row.slug,
         enabled: row.enabled,
+        inCluster,
         toolAllowlist: row.toolAllowlist,
         tools: state.tools,
       })),
@@ -69,8 +77,8 @@ export class ToolRouter {
   }
 
   /**
-   * lookup -> enabled check -> policy check -> audit row ('pending') -> upstream call (timeout + caller's abort
-   * signal) -> result capped -> audit row completed.
+   * lookup -> enabled check -> policy check -> rate limit -> audit row ('pending') -> upstream call (timeout +
+   * caller's abort signal) -> result capped -> audit row completed.
    * Unknown, disabled or denied tools are JSON-RPC errors (-32602). Upstream trouble is a normal tool result with
    * isError: true and a readable reason, which models handle far better than protocol errors.
    * The caller's own Authorization header never reaches this function, so it can never be forwarded upstream.
@@ -103,6 +111,13 @@ export class ToolRouter {
       await this.reject(principal, target, argsHash, `not permitted for role ${principal.role}`);
       throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Tool ${exposedName} is not permitted for your role`);
     }
+    // Here, after the permission checks, so only calls that would really run use up the user's budget.
+    const limited = this.rateLimiter.check(principal.userId, entry.serverSlug, !entry.serverInCluster);
+    if (limited) {
+      await this.reject(principal, target, argsHash, limited);
+      // A tool result, not a protocol error: a model reads it and can tell the user to wait a minute.
+      return { isError: true, content: [{ type: 'text', text: `${entry.serverSlug}: ${limited}; try again in a minute` }] };
+    }
 
     // Written before the upstream sees anything. If the audit row cannot be written, the call does not happen.
     const auditId = await this.deps.audit.begin(principal, target, argsHash);
@@ -125,7 +140,7 @@ export class ToolRouter {
     } catch (err) {
       // Not expected (the manager turns upstream failures into outcomes), but never leave the audit row pending.
       error = 'internal gateway error';
-      log('error', 'tool call failed inside the gateway', { tool: exposedName, err: String(err) });
+      log('error', 'tool call failed inside the gateway', { tool: exposedName, ...errorForLog(err) });
       return { isError: true, content: [{ type: 'text', text: `${entry.serverSlug}: internal gateway error` }] };
     } finally {
       const durationMs = Math.round(performance.now() - started);
@@ -134,7 +149,7 @@ export class ToolRouter {
       log('info', 'tool call', { user: principal.userId, via: principal.via, tool: exposedName, status, ms: durationMs });
       await this.deps.audit
         .complete(auditId, { status, durationMs, error })
-        .catch((err: unknown) => log('error', 'could not complete audit row', { auditId, err: String(err) }));
+        .catch((err: unknown) => log('error', 'could not complete audit row', { auditId, ...errorForLog(err) }));
       this.inFlight -= 1; // only now: shutdown waits for this, and the audit row must be complete by then
     }
   }

@@ -2,7 +2,8 @@ import type Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 
 // Caps keep one request's cost and size bounded. The browser keeps the visible transcript and resends
-// it every turn, so these limit how long a conversation can grow before the user starts a new one.
+// it every turn, so these limit how long a conversation can grow; the dashboard trims its history to fit
+// (apps/dashboard/src/chat/transcript.ts mirrors both numbers).
 export const MAX_MESSAGES = 50;
 export const MAX_MESSAGE_CHARS = 10_000;
 
@@ -11,8 +12,8 @@ const ChatMessage = z.strictObject({
   content: z.string().max(MAX_MESSAGE_CHARS),
 });
 
-/** Body of POST /api/chat. The last message must be a non-blank user message (the question for this turn). */
-export const ChatRequest = z.strictObject({
+/** A new question: the visible transcript, ending with a non-blank user message (the question for this turn). */
+export const ChatTurnRequest = z.strictObject({
   messages: z
     .array(ChatMessage)
     .min(1)
@@ -23,7 +24,24 @@ export const ChatRequest = z.strictObject({
     }, 'the last message must be a non-empty user message'),
 });
 
-export type ChatRequest = z.infer<typeof ChatRequest>;
+/**
+ * The user's answer to a `confirm_required` event. Only the id and yes/no: the tool calls themselves were stored
+ * on the server when the turn paused, so the browser (or text the model wrote) can never change what runs.
+ */
+export const ApprovalAnswer = z.strictObject({
+  confirm: z.strictObject({ id: z.uuid(), approve: z.boolean() }),
+});
+
+export type ChatRequest = z.infer<typeof ChatTurnRequest> | z.infer<typeof ApprovalAnswer>;
+
+/**
+ * Body of POST /api/chat: an approval answer when it has a `confirm` field, otherwise a new message. Choosing the
+ * schema by that field (instead of a zod union) keeps the 400 messages specific, e.g. "messages.0.content: Too big".
+ */
+export function parseChatRequest(body: unknown) {
+  const isAnswer = typeof body === 'object' && body !== null && 'confirm' in body;
+  return isAnswer ? ApprovalAnswer.safeParse(body) : ChatTurnRequest.safeParse(body);
+}
 
 /**
  * Turns the browser's text transcript into Messages API history.
@@ -33,7 +51,7 @@ export type ChatRequest = z.infer<typeof ChatRequest>;
  *   to come from the user.
  * Consecutive messages with the same role are fine; the API merges them into one turn.
  */
-export function toAnthropicMessages(messages: ChatRequest['messages']): Anthropic.MessageParam[] {
+export function toAnthropicMessages(messages: z.infer<typeof ChatTurnRequest>['messages']): Anthropic.MessageParam[] {
   const history: Anthropic.MessageParam[] = [];
   for (const { role, content } of messages) {
     if (content.trim() === '') continue;

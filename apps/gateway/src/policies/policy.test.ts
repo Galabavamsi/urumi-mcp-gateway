@@ -6,6 +6,7 @@ describe('isToolDenied', () => {
     expect(isToolDenied(DEFAULT_POLICIES, 'member', 'woo', 'create_product')).toBe(true);
     expect(isToolDenied(DEFAULT_POLICIES, 'member', 'woo', 'update_order_status')).toBe(true);
     expect(isToolDenied(DEFAULT_POLICIES, 'member', 'woo', 'list_orders')).toBe(false);
+    expect(isToolDenied(DEFAULT_POLICIES, 'member', 'mail', 'send_message')).toBe(true);
     expect(isToolDenied(DEFAULT_POLICIES, 'admin', 'woo', 'create_product')).toBe(false);
   });
 

@@ -22,6 +22,10 @@ function counterServer(): McpServer {
     calls += 1;
     return { content: [{ type: 'text', text: `call ${calls}` }] };
   });
+  mcp.registerTool('slow', { description: 'Answers after 300 ms', inputSchema: z.object({}) }, async () => {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    return { content: [{ type: 'text', text: 'slow done' }] };
+  });
   return mcp;
 }
 
@@ -58,7 +62,7 @@ const newClient = () =>
 describe('UpstreamClient with a sessionful legacy upstream', () => {
   it('negotiates the legacy era (the server has no server/discover)', async () => {
     const client = newClient();
-    expect((await client.listTools(3000)).map((t) => t.name)).toEqual(['bump']);
+    expect((await client.listTools(3000)).map((t) => t.name)).toEqual(['bump', 'slow']);
     expect(client.era).toBe('legacy');
     await client.close();
   });
@@ -67,7 +71,7 @@ describe('UpstreamClient with a sessionful legacy upstream', () => {
     const client = newClient();
     await client.listTools(3000);
     sessions.clear(); // "the upstream pod restarted"
-    expect((await client.listTools(3000)).map((t) => t.name)).toEqual(['bump']);
+    expect((await client.listTools(3000)).map((t) => t.name)).toEqual(['bump', 'slow']);
     await client.close();
   });
 
@@ -80,6 +84,29 @@ describe('UpstreamClient with a sessionful legacy upstream', () => {
     expect(calls).toBe(before); // nothing ran twice
     const result = await client.callTool('bump', {}, { timeoutMs: 3000 });
     expect(result.content).toEqual([{ type: 'text', text: `call ${before + 1}` }]);
+    await client.close();
+  });
+
+  it('reset(grace) lets a running call finish while new requests use a fresh connection', async () => {
+    const client = newClient();
+    await client.listTools(3000);
+    const sessionsBefore = sessions.size;
+    const running = client.callTool('slow', {}, { timeoutMs: 3000 });
+    await new Promise((resolve) => setTimeout(resolve, 50)); // the call is on the wire
+    await client.reset(5_000);
+    expect((await client.listTools(3000)).map((t) => t.name)).toContain('slow'); // reconnected: a new session
+    expect(sessions.size).toBe(sessionsBefore + 1);
+    await expect(running).resolves.toMatchObject({ content: [{ type: 'text', text: 'slow done' }] });
+    await client.close();
+  });
+
+  it('reset() without grace closes at once, which aborts a running call (why the manager passes a grace)', async () => {
+    const client = newClient();
+    await client.listTools(3000);
+    const running = client.callTool('slow', {}, { timeoutMs: 3000 });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await client.reset();
+    await expect(running).rejects.toThrow(/closed/i);
     await client.close();
   });
 

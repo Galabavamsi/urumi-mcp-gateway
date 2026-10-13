@@ -5,6 +5,7 @@
 import { fileURLToPath } from 'node:url';
 import { log } from '@urumi/mcp-common';
 import { loadConfig, type Config } from './config.ts';
+import { errorForLog } from './db/errors.ts';
 import { createGateway } from './gateway.ts';
 import { closeServer, listen, listenMetrics } from './http.ts';
 
@@ -26,7 +27,8 @@ const gateway = createGateway(config, { migrationsFolder: fileURLToPath(new URL(
 try {
   await gateway.start();
 } catch (err) {
-  log('error', 'gateway startup failed', { err: err instanceof Error ? err.message : String(err) });
+  // A failed bootstrap-admin insert would otherwise log the admin's email and password hash (db/errors.ts).
+  log('error', 'gateway startup failed', errorForLog(err));
   process.exit(1);
 }
 

@@ -8,6 +8,7 @@ import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { requireAdmin, requireSession } from '../auth/middleware.ts';
 import { SLUG_PATTERN } from '../catalog/naming.ts';
+import { pgErrorCode } from '../db/errors.ts';
 import { upstreamServers, type UpstreamServerRow } from '../db/schema.ts';
 import { assertUrlAllowed, UrlNotAllowedError } from '../security/ssrf.ts';
 import type { AppEnv } from '../types.ts';
@@ -120,7 +121,9 @@ export function serverRoutes(deps: ApiDeps): Hono<AppEnv> {
         toolAllowlist: body.toolAllowlist ?? null,
       });
     } catch (err) {
-      if ((err as { code?: string }).code === '23505') throw new ApiError(422, 'slug_taken', `slug '${body.slug}' is already used`);
+      // Two admins adding the same slug at once: the unique index catches the second (SQLSTATE 23505 = unique
+      // violation; Drizzle wraps the driver error, so the code is read through db/errors.ts).
+      if (pgErrorCode(err) === '23505') throw new ApiError(422, 'slug_taken', `slug '${body.slug}' is already used`);
       throw err;
     }
     await manager.reload(id);
@@ -136,6 +139,19 @@ export function serverRoutes(deps: ApiDeps): Hono<AppEnv> {
     const headerName = authType === 'header' ? (body.headerName !== undefined ? body.headerName : row.headerName) : null;
     checkAuth(authType, headerName, Boolean(body.credential));
     if (body.url !== undefined) await checkUrl(body.url);
+    // A write-only credential must never follow an edit to another destination: otherwise anyone with an admin
+    // session could point the Firecrawl or mail server at their own host and read the key from the request. So a new
+    // origin (scheme://host:port) or a different auth type/header needs the credential typed in again. (Origins are
+    // compared, not "was url sent": the dashboard always sends the url, changed or not.)
+    const destinationChanged =
+      new URL(body.url ?? row.url).origin !== new URL(row.url).origin || authType !== row.authType || headerName !== row.headerName;
+    if (row.credentialEnc && destinationChanged && authType !== 'none' && body.credential === undefined) {
+      throw new ApiError(
+        422,
+        'credential_required',
+        'changing the server address or how it authenticates needs the credential again (a stored credential never follows such a change)',
+      );
+    }
     let credentialEnc = row.credentialEnc;
     if (body.credential !== undefined) credentialEnc = body.credential === '' ? null : secretBox.encrypt(body.credential, id);
     if (authType === 'none') credentialEnc = null; // switching to "no auth" forgets the old credential

@@ -1,5 +1,5 @@
 import { Check, Copy } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type MouseEvent } from 'react';
 import { copyText } from '../lib/clipboard';
 
 type CopyState = 'idle' | 'copied' | 'failed';
@@ -14,9 +14,10 @@ export function CopyButton({ text, label = 'Copy', what }: { text: string; label
     return () => clearTimeout(timer);
   }, [state]);
 
-  async function copy() {
+  async function copy(event: MouseEvent<HTMLButtonElement>) {
+    const button = event.currentTarget; // read before the await: React clears currentTarget after the handler returns
     try {
-      await copyText(text);
+      await copyText(text, button);
       setState('copied');
     } catch {
       setState('failed');
@@ -47,7 +48,8 @@ export function CopyBlock({ label, text, help }: { label: string; text: string; 
         </div>
         <CopyButton text={text} what={label} />
       </div>
-      <pre className="overflow-x-auto rounded-md border border-line bg-sunken px-3 py-2.5 text-[13px] leading-relaxed whitespace-pre-wrap break-all text-ink">
+      {/* select-all: one click selects the whole value, for a manual copy if the Copy button fails */}
+      <pre className="overflow-x-auto rounded-md border border-line bg-sunken px-3 py-2.5 text-[13px] leading-relaxed whitespace-pre-wrap break-all text-ink select-all">
         {text}
       </pre>
     </div>

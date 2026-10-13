@@ -49,6 +49,27 @@ function parseAllowlist(text: string): string[] | null {
   return names.length > 0 ? [...new Set(names)] : null;
 }
 
+/** scheme://host:port of a URL, or null when it does not parse. */
+function originOf(url: string): string | null {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Does this save need the credential typed in? Always for a new credential-based server. For an existing one when
+ * there is none stored yet, or when the destination changes (another origin, auth type or header): a stored
+ * credential never follows the server to a new place (the gateway answers 422 credential_required).
+ */
+function needsCredential(form: FormState, server: UpstreamServer | null): boolean {
+  if (form.authType === 'none') return false;
+  if (!server?.hasCredential || server.authType === 'none') return true;
+  const headerName = form.authType === 'header' ? form.headerName.trim() : null;
+  return originOf(form.url) !== originOf(server.url) || form.authType !== server.authType || headerName !== server.headerName;
+}
+
 function validate(form: FormState, server: UpstreamServer | null): FieldErrors {
   const errors: FieldErrors = {};
   if (!server && !SLUG_PATTERN.test(form.slug)) {
@@ -64,8 +85,11 @@ function validate(form: FormState, server: UpstreamServer | null): FieldErrors {
   if (form.authType === 'header' && !HEADER_NAME_PATTERN.test(form.headerName)) {
     errors.headerName = 'Enter a header name such as x-api-key.';
   }
-  const needsCredential = form.authType !== 'none' && !(server?.hasCredential && server.authType !== 'none');
-  if (needsCredential && form.credential.length === 0) errors.credential = 'Enter the credential.';
+  if (needsCredential(form, server) && form.credential.length === 0) {
+    errors.credential = server?.hasCredential
+      ? 'Enter the credential again: a stored one is never sent to a new address or header.'
+      : 'Enter the credential.';
+  }
   if (form.timeoutMs && !/^\d+$/.test(form.timeoutMs)) errors.timeoutMs = 'Whole milliseconds, for example 10000.';
   return errors;
 }
@@ -90,6 +114,7 @@ function toPayload(form: FormState, server: UpstreamServer | null): CreateServer
 function fieldForError(code: string): keyof FormState | null {
   if (code === 'invalid_slug' || code === 'slug_taken') return 'slug';
   if (code === 'url_not_allowed') return 'url';
+  if (code === 'credential_required') return 'credential';
   return null;
 }
 
@@ -151,7 +176,7 @@ function ServerForm({ server, onDone }: { server: UpstreamServer | null; onDone:
   }
 
   const generalError = save.isError && !(save.error instanceof ApiError && fieldForError(save.error.code)) ? save.error : null;
-  const keepsCredential = server?.hasCredential && server.authType !== 'none';
+  const keepsCredential = server?.hasCredential && server.authType !== 'none' && !needsCredential(form, server);
 
   return (
     <form onSubmit={submit} noValidate>

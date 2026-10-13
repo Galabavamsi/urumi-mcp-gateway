@@ -7,9 +7,10 @@
 import { eq, isNull } from 'drizzle-orm';
 import type { CallToolResult, Tool } from '@modelcontextprotocol/client';
 import { log } from '@urumi/mcp-common';
-import { toolDefinitionHash } from '../catalog/naming.ts';
+import { toolDefinitionHash, toolLooksLikeInjection } from '../catalog/naming.ts';
 import type { SecretBox } from '../crypto/secretBox.ts';
 import type { Db } from '../db/client.ts';
+import { errorForLog } from '../db/errors.ts';
 import { upstreamServers, type CachedTool, type ToolHashes, type UpstreamServerRow } from '../db/schema.ts';
 import type { GatewayMetrics } from '../metrics.ts';
 import { isAllowlistedHost, type FetchLike } from '../security/ssrf.ts';
@@ -33,6 +34,12 @@ export interface ServerLiveState {
 export interface ServerSnapshot {
   row: UpstreamServerRow;
   state: ServerLiveState;
+  /**
+   * True for our own in-cluster servers (host in INTERNAL_HOST_ALLOWLIST, code we wrote); false for third-party
+   * servers. The catalog trusts tool annotations only from in-cluster servers; the rate limiter is stricter for
+   * third-party ones (they spend shared credits and can reach the outside world).
+   */
+  inCluster: boolean;
 }
 
 export type CallOutcome =
@@ -97,14 +104,14 @@ export class UpstreamManager {
     const s = this.servers.get(serverId);
     if (!s?.client) return;
     await s.checking; // let a check that is already running finish on its own connection first
-    await s.client.reset();
+    await s.client.reset(this.callGraceMs(s)); // calls still running on the old connection may finish
     s.failures = 0;
     await this.runCheck(s);
   }
 
   get(serverId: string): ServerSnapshot | undefined {
     const s = this.servers.get(serverId);
-    return s && { row: s.row, state: s.state };
+    return s && this.toSnapshot(s);
   }
 
   /**
@@ -113,7 +120,7 @@ export class UpstreamManager {
    */
   snapshot(): ServerSnapshot[] {
     return [...this.servers.values()]
-      .map((s) => ({ row: s.row, state: s.state }))
+      .map((s) => this.toSnapshot(s))
       .sort((a, b) => a.row.createdAt.getTime() - b.row.createdAt.getTime() || (a.row.slug < b.row.slug ? -1 : 1));
   }
 
@@ -228,14 +235,26 @@ export class UpstreamManager {
     setTimeout(() => void client.close(), graceMs + 1_000).unref();
   }
 
+  /** How long calls running on a dropped connection may still need: the server's call timeout plus 1 s. */
+  private callGraceMs(s: Supervised): number {
+    return s.row.timeoutMs + 1_000;
+  }
+
   /** True while `s` is still the supervised instance (an admin edit replaces it; late results are dropped). */
   private isCurrent(s: Supervised): boolean {
     return !this.stopped && this.servers.get(s.row.id) === s;
   }
 
+  private isInCluster(row: UpstreamServerRow): boolean {
+    return isAllowlistedHost(new URL(row.url), this.opts.allowlist);
+  }
+
+  private toSnapshot(s: Supervised): ServerSnapshot {
+    return { row: s.row, state: s.state, inCluster: this.isInCluster(s.row) };
+  }
+
   private healthInterval(s: Supervised): number {
-    const inCluster = isAllowlistedHost(new URL(s.row.url), this.opts.allowlist);
-    return inCluster ? this.opts.healthIntervalMs : (this.opts.externalHealthIntervalMs ?? EXTERNAL_HEALTH_INTERVAL_MS);
+    return this.isInCluster(s.row) ? this.opts.healthIntervalMs : (this.opts.externalHealthIntervalMs ?? EXTERNAL_HEALTH_INTERVAL_MS);
   }
 
   /**
@@ -287,8 +306,9 @@ export class UpstreamManager {
       s.state.lastCheckedAt = checkedAt;
       const failure = classifyUpstreamError(err, HEALTH_TIMEOUT_MS);
       // Rebuild the connection on the next attempt (fresh session, fresh era negotiation), except after a mere
-      // timeout: the connection itself is fine then, and tearing it down would cut tool calls still running on it.
-      if (failure.kind !== 'timeout') await client.reset();
+      // timeout: the connection itself is fine then. Even when we do rebuild, tool calls still running on the old
+      // connection get their full timeout to finish (a failed tools/list says little about them).
+      if (failure.kind !== 'timeout') await client.reset(this.callGraceMs(s));
       log('debug', 'upstream health check failed', { server: s.row.slug, reason: failure.reason, failures: s.failures });
       // One slow answer should not flip the dashboard red; a refused connection (pod gone, NetworkPolicy) or a
       // rejected credential is unambiguous, and so is a server that never connected at all.
@@ -298,11 +318,16 @@ export class UpstreamManager {
     }
   }
 
+  /** A tool call hit a connection-level error: flip the dashboard now, and confirm or clear it within ~5 s. */
   private markUnreachable(s: Supervised, reason: string): void {
     if (!this.isCurrent(s)) return;
     s.failures = Math.max(s.failures, 1);
-    void s.client?.reset();
+    void s.client?.reset(this.callGraceMs(s)); // sibling calls on the old connection may still finish
     this.setStatus(s, 'unreachable', reason, null);
+    // The pending health check was armed with the healthy interval (30 s for an external server). Re-arm it on the
+    // failure schedule (failures >= 1, so the fast 5 s interval): a one-off reset is cleared by the next check
+    // instead of failing every user's calls fast for up to 30 s. A check already running re-arms its own timer.
+    this.schedule(s, this.nextCheckDelay(s));
   }
 
   private setStatus(s: Supervised, status: ServerStatus, reason: string | null, era: ProtocolEra | null): void {
@@ -351,6 +376,10 @@ export class UpstreamManager {
       } else {
         hashes[tool.name] = previous;
       }
+      // Logged once per new or changed definition (not on every check). The dashboard flags it too (api/dto.ts).
+      if (hashes[tool.name] !== previous && toolLooksLikeInjection(tool)) {
+        log('warn', 'upstream tool text reads like instructions to the model', { server: s.row.slug, tool: tool.name });
+      }
     }
     if (!changed) return;
 
@@ -361,7 +390,7 @@ export class UpstreamManager {
       .update(upstreamServers)
       .set({ tools: cached, toolHashes: hashes })
       .where(eq(upstreamServers.id, s.row.id))
-      .catch((err: unknown) => log('error', 'could not store tool catalog', { server: s.row.slug, err: String(err) }));
+      .catch((err: unknown) => log('error', 'could not store tool catalog', { server: s.row.slug, ...errorForLog(err) }));
     this.emitCatalogChange();
   }
 
@@ -372,7 +401,7 @@ export class UpstreamManager {
       .update(upstreamServers)
       .set({ status, statusReason, protocolEra, lastCheckedAt, lastOkAt })
       .where(eq(upstreamServers.id, s.row.id))
-      .catch((err: unknown) => log('error', 'could not store upstream status', { server: s.row.slug, err: String(err) }));
+      .catch((err: unknown) => log('error', 'could not store upstream status', { server: s.row.slug, ...errorForLog(err) }));
   }
 
   private emitCatalogChange(): void {

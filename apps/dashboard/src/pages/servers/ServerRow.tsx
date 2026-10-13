@@ -7,8 +7,9 @@ import type { ServerStatus, UpstreamServer } from '../../api/types';
 import { Switch } from '../../components/Controls';
 import { ErrorNote } from '../../components/Feedback';
 import { Lamp, ServerStatusBadge } from '../../components/StatusBadge';
-import { formatDateTime, formatRelative } from '../../lib/format';
+import { formatDateTime, formatRelative, plural } from '../../lib/format';
 import { ToolTable } from './ToolTable';
+import { hiddenReason } from './toolReason';
 
 /** The coloured edge on the left of each row: the rack's status strip. */
 const EDGE: Record<ServerStatus, string> = {
@@ -44,7 +45,10 @@ export function ServerRow({ server, isAdmin, onEdit, onDelete }: Props) {
 
   const exposedTools = server.tools.filter((t) => t.exposed);
   const allowedTools = exposedTools.filter((t) => t.allowedForMe);
-  const hiddenCount = server.tools.length - exposedTools.length;
+  const hidden = server.tools.filter((t) => !t.exposed).map((t) => hiddenReason(server, t));
+  const hiddenByAllowlist = hidden.filter((reason) => reason === 'allowlist').length;
+  const notExposed = hidden.filter((reason) => reason === 'not_exposed').length;
+  const changedDefinitions = server.tools.filter((t) => t.definitionChangedAt).length;
   const muted = server.status === 'disabled';
   const showReason = server.statusReason && server.status !== 'connected';
 
@@ -80,10 +84,21 @@ export function ServerRow({ server, isAdmin, onEdit, onDelete }: Props) {
             </Fact>
             <Fact label="Protocol">{server.protocolEra ? ERA_LABEL[server.protocolEra] : 'Not negotiated yet'}</Fact>
             <Fact label="Tools">
-              {exposedTools.length}
-              {hiddenCount > 0 && <span className="text-ink-2"> ({hiddenCount} hidden by allowlist)</span>}
-              {!isAdmin && allowedTools.length < exposedTools.length && (
-                <span className="text-ink-2"> ({allowedTools.length} available to you)</span>
+              {!server.enabled ? (
+                // A disabled server offers nothing; its last known tools are kept for when it is enabled again.
+                <span className="text-ink-2">0 (server disabled; {server.tools.length} known)</span>
+              ) : (
+                <>
+                  {exposedTools.length}
+                  {hiddenByAllowlist > 0 && <span className="text-ink-2"> ({hiddenByAllowlist} hidden by allowlist)</span>}
+                  {notExposed > 0 && <span className="text-ink-2"> ({notExposed} not exposed)</span>}
+                  {!isAdmin && allowedTools.length < exposedTools.length && (
+                    <span className="text-ink-2"> ({allowedTools.length} available to you)</span>
+                  )}
+                </>
+              )}
+              {changedDefinitions > 0 && (
+                <span className="font-medium text-warn"> ({plural(changedDefinitions, 'tool definition')} changed)</span>
               )}
             </Fact>
             <Fact label="Last checked">
@@ -106,7 +121,7 @@ export function ServerRow({ server, isAdmin, onEdit, onDelete }: Props) {
             </button>
           )}
           <div id={toolsId} hidden={!showTools}>
-            {showTools && <ToolTable tools={server.tools} isAdmin={isAdmin} />}
+            {showTools && <ToolTable server={server} isAdmin={isAdmin} />}
           </div>
 
           {(toggle.isError || refresh.isError) && (

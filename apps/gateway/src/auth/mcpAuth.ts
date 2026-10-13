@@ -6,6 +6,7 @@ import { log } from '@urumi/mcp-common';
 import type { AuditLog } from '../audit/auditLog.ts';
 import { apiKeyMatches, apiKeyPrefix, parseApiKey } from '../crypto/apiKeys.ts';
 import type { Db } from '../db/client.ts';
+import { errorForLog } from '../db/errors.ts';
 import { apiKeys, users } from '../db/schema.ts';
 import type { GatewayMetrics } from '../metrics.ts';
 import type { Principal } from '../types.ts';
@@ -93,7 +94,7 @@ export class ApiKeyAuthenticator {
       .update(apiKeys)
       .set({ lastUsedAt: sql`now()` })
       .where(and(eq(apiKeys.id, apiKeyId), or(isNull(apiKeys.lastUsedAt), lt(apiKeys.lastUsedAt, oneMinuteAgo))))
-      .catch((err: unknown) => log('warn', 'could not update api key last_used_at', { err: String(err) }));
+      .catch((err: unknown) => log('warn', 'could not update api key last_used_at', errorForLog(err)));
   }
 
   private async reject(
@@ -114,7 +115,7 @@ export class ApiKeyAuthenticator {
           apiKeyPrefix: who.prefix ?? null,
           error: message,
         })
-        .catch((err: unknown) => log('error', 'could not audit an auth rejection', { err: String(err) }));
+        .catch((err: unknown) => log('error', 'could not audit an auth rejection', errorForLog(err)));
     }
     return { ok: false, reason: message };
   }

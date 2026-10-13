@@ -10,10 +10,12 @@
 //   d2  the admin invites A (admin) and B (member); both accept; an invite link works only once
 //   d3  GET /api/servers lists woo, supplier, firecrawl, mail (woo first), connected
 //   d4  B's key, both protocol eras: every server's tools under <server>__ names (the two list_products don't
-//       collide); woo__create_product is hidden from B (member policy) and a call to it is refused
+//       collide); woo__create_product and mail__send_message are hidden from B (member policy), a call is refused
 //   d5  a storefront guest Cash-on-Delivery order (the "by hand" order, placed via the Store API) is visible to B
 //   d6  A's chat: "Create a product named 'DoD Test Lamp' priced 349" -> woo__create_product -> on the storefront
 //   d7  a COD order for the lamp; A's chat: "What orders came in today?" -> woo__list_orders, names that order
+//   d7b A's chat: "Mark that order as completed" -> the agent pauses (confirm_required) before woo__update_order_status;
+//       nothing changes until A approves; after approval the order is completed
 //   d8  B: woo__list_orders {date:"today"} returns both orders; one flow over two upstreams (supplier, then woo)
 //   d9  B in Claude Code (claude -p, gateway URL + B's key only) answers a question needing supplier AND woo
 //   d10 A revokes B's key -> B's next MCP request gets HTTP 401; audited as auth_rejected under B
@@ -30,7 +32,7 @@
 //   node scripts/e2e-dod.mjs --keep-users       leave A and B active afterwards, for a manual demo
 //   node scripts/e2e-dod.mjs --no-claude-code   skip d9
 // On Windows, kubectl runs inside WSL (wsl.exe -d Ubuntu --exec ...). Exit code 0 = every check passed.
-// Cost: three short Claude Haiku chat turns (about one US cent) and, for d9, one Claude Code prompt.
+// Cost: four short Claude Haiku chat turns (about one US cent) and, for d9, one Claude Code prompt.
 //
 // Secrets: the bootstrap admin's credentials are read with kubectl into memory. A's and B's passwords are
 // generated here and written only to notes/demo-accounts.local.md (gitignored, private vault); API keys exist only
@@ -312,21 +314,31 @@ async function* readSse(body) {
 
 /** One chat turn as the dashboard sends it: the visible transcript in, a stream of events out. */
 async function chat(session, messages) {
+  return chatRequest(session, { messages });
+}
+
+/** The answer to an approval request (confirm_required): only its id and yes/no; the reply continues. */
+async function answerApproval(session, id, approve) {
+  return chatRequest(session, { confirm: { id, approve } });
+}
+
+async function chatRequest(session, body) {
   const started = Date.now();
   const res = await fetch(`${APP_URL}/api/chat`, {
     method: 'POST',
     headers: { cookie: session.cookie, 'content-type': 'application/json', accept: 'text/event-stream', 'x-urumi-csrf': '1' },
-    body: JSON.stringify({ messages }),
+    body: JSON.stringify(body),
     signal: AbortSignal.timeout(180_000),
   });
   if (res.status !== 200) throw new Error(`POST /api/chat -> ${res.status} ${short(await res.text())}`);
   assert((res.headers.get('content-type') ?? '').includes('text/event-stream'), `content-type ${res.headers.get('content-type')}`);
-  const turn = { tools: null, calls: [], texts: [], done: null, error: null };
+  const turn = { tools: null, calls: [], texts: [], confirm: null, done: null, error: null };
   for await (const { event, data } of readSse(res.body)) {
     if (event === 'tools') turn.tools = data;
     else if (event === 'text') turn.texts.push(data.text);
     else if (event === 'tool_call') turn.calls.push({ id: data.id, name: data.name, args: data.args });
     else if (event === 'tool_result') Object.assign(turn.calls.find((c) => c.id === data.id) ?? {}, data);
+    else if (event === 'confirm_required') turn.confirm = data;
     else if (event === 'done') turn.done = data;
     else if (event === 'error') turn.error = data.message;
   }
@@ -568,11 +580,13 @@ async function main() {
       assert(era === (mode === 'auto' ? 'modern' : 'legacy'), `${mode}: negotiated era ${era}`);
       const names = await toolNames(client);
       const must = ['woo__list_orders', 'woo__list_products', 'supplier__list_products', 'supplier__check_stock'];
-      if (state.externalUp?.mail) must.push('mail__send_message');
       const missing = must.filter((n) => !names.includes(n));
       assert(missing.length === 0, `${era}: missing ${missing.join(', ')}`);
       if (state.externalUp?.firecrawl) assert(names.some((n) => n.startsWith('firecrawl__')), `${era}: no firecrawl__ tools`);
-      for (const hidden of ['woo__create_product', 'woo__update_order_status']) assert(!names.includes(hidden), `${era}: ${hidden} is listed for member B`);
+      // Member policy: no store writes and no email from the team address (customer data + an outbound channel).
+      for (const hidden of ['woo__create_product', 'woo__update_order_status', 'mail__send_message']) {
+        assert(!names.includes(hidden), `${era}: ${hidden} is listed for member B`);
+      }
       assert(names.every((n) => /^[a-z][a-z0-9-]*__[A-Za-z0-9_-]+$/.test(n) && n.length <= 48), `${era}: a tool name breaks the naming rule`);
       if (mode === 'auto') state.clientB1 = client;
       const examples = ['woo__list_products', 'supplier__list_products', names.find((n) => n.startsWith('firecrawl__')), names.find((n) => n.startsWith('mail__'))];
@@ -583,7 +597,7 @@ async function main() {
       (err) => `refused: ${err.message}`,
     );
     assert(refused.startsWith('refused') && /not permitted/.test(refused), `woo__create_product as B: ${refused}`);
-    lines.push(`hidden for B: woo__create_product, woo__update_order_status; calling woo__create_product -> ${short(refused, 110)}`);
+    lines.push(`hidden for B: woo__create_product, woo__update_order_status, mail__send_message; calling woo__create_product -> ${short(refused, 110)}`);
     return lines;
   });
 
@@ -607,6 +621,10 @@ async function main() {
     let turn = await chat(A, [{ role: 'user', content: ask }]);
     const lines = [`turn 1: tools ${turn.tools.count} (incl. woo__create_product: ${turn.tools.names.includes('woo__create_product')}); calls: ${describeCalls(turn)}; ${describeTurn(turn)}`];
     assert(turn.tools.names.includes('woo__create_product'), 'admin A does not get woo__create_product');
+    if (turn.confirm) {
+      lines.push(`paused for approval of ${turn.confirm.calls.map((c) => c.name).join(', ')}; approving`);
+      turn = await answerApproval(A, turn.confirm.id, true);
+    }
     let created = turn.calls.find((c) => c.name === 'woo__create_product' && c.ok);
     if (!created) {
       // The agent may ask before a write (its prompt allows that when details are unclear): answer like a user would.
@@ -651,6 +669,47 @@ async function main() {
       `chat calls: ${describeCalls(turn)} with args ${short(JSON.stringify(listCall.args), 100)}; ${describeTurn(turn)}`,
       `assistant: "${short(turn.text, 260)}"`,
     ];
+  });
+
+  await check('d7b', "A's chat asks before a destructive tool: woo__update_order_status waits for approval, then runs", async () => {
+    assert(state.lampOrderId, 'no lamp order (d7 failed)');
+    const ask = `Mark order #${state.lampOrderId} as completed.`;
+    let turn = await chat(A, [{ role: 'user', content: ask }]);
+    const lines = [`turn 1: calls: ${describeCalls(turn)}; ${describeTurn(turn)}`];
+    if (!turn.confirm) {
+      // The agent may first ask in words; answer like a user would.
+      turn = await chat(A, [
+        { role: 'user', content: ask },
+        { role: 'assistant', content: turn.text || '(no reply)' },
+        { role: 'user', content: 'Yes, please do it now.' },
+      ]);
+      lines.push(`turn 2: calls: ${describeCalls(turn)}; ${describeTurn(turn)}`);
+    }
+    assert(turn.confirm && turn.done.stopReason === 'needs_confirmation', `no approval request; reply: ${short(turn.text, 200)}`);
+    const gated = turn.confirm.calls.find((c) => c.name === 'woo__update_order_status');
+    assert(gated, `the approval request is for ${turn.confirm.calls.map((c) => c.name).join(', ')}`);
+    assert(turn.calls.every((c) => c.ok === undefined || c.name !== 'woo__update_order_status'), 'the gated call ran before approval');
+    const before = await callOk(state.clientB1, 'woo__get_order', { id: state.lampOrderId });
+    assert(before.status !== 'completed', `order is already ${before.status} before the approval`);
+    lines.push(`confirm_required for woo__update_order_status ${short(JSON.stringify(gated.args), 80)}; order still "${before.status}"`);
+
+    const approved = await answerApproval(A, turn.confirm.id, true);
+    const ran = approved.calls.find((c) => c.name === 'woo__update_order_status');
+    assert(ran?.ok, `after approval: calls ${describeCalls(approved)}; reply ${short(approved.text, 200)}`);
+    const after = await callOk(state.clientB1, 'woo__get_order', { id: state.lampOrderId });
+    assert(after.status === 'completed', `order status after approval: ${after.status}`);
+    const reused = await fetch(`${APP_URL}/api/chat`, {
+      method: 'POST',
+      headers: { cookie: A.cookie, 'content-type': 'application/json', 'x-urumi-csrf': '1' },
+      body: JSON.stringify({ confirm: { id: turn.confirm.id, approve: true } }),
+    });
+    await reused.text();
+    assert(reused.status === 404, `answering the same approval twice -> HTTP ${reused.status}`);
+    lines.push(
+      `approved: woo__update_order_status ok in ${ran.durationMs} ms; order #${state.lampOrderId} now "${after.status}"; ${describeTurn(approved)}`,
+      `the same approval id a second time -> HTTP 404 (single use); assistant: "${short(approved.text, 160)}"`,
+    );
+    return lines;
   });
 
   await check('d8', "B: today's orders over MCP; one flow over two upstreams (supplier, then woo)", async () => {
@@ -886,6 +945,7 @@ async function main() {
       [bRows, null, 'auth_rejected', 'mcp'],
       [aRows, 'woo__create_product', 'ok', 'chat'],
       [aRows, 'woo__list_orders', 'ok', 'chat'],
+      [aRows, 'woo__update_order_status', 'ok', 'chat'],
     ];
     const missing = expectations.filter(([rows, ...want]) => !has(rows, ...want)).map(([, ...want]) => want.join('/'));
     assert(missing.length === 0, `missing audit rows: ${missing.join(', ')}`);

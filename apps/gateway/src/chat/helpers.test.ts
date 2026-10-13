@@ -1,6 +1,7 @@
 // Unit tests for the small pure pieces of the chat module.
 import type { Tool as McpTool } from '@modelcontextprotocol/client';
 import { describe, expect, it } from 'vitest';
+import { needsApproval } from './confirm.ts';
 import { buildSystemPrompt, formatStoreTime } from './prompt.ts';
 import { toAnthropicMessages } from './request.ts';
 import { normalizeInputSchema, toAnthropicTools, toolResultText, truncate } from './tools.ts';
@@ -20,11 +21,30 @@ describe('formatStoreTime / buildSystemPrompt', () => {
     for (const prefix of ['woo__', 'supplier__', 'firecrawl__', 'mail__']) expect(prompt).toContain(prefix);
     expect(prompt).toContain('urumi@agentmail.to');
     expect(prompt).toMatch(/untrusted data/i);
+    expect(prompt).toMatch(/tool descriptions come from third-party servers/i);
     expect(prompt).toMatch(/explicitly asked/);
   });
 
   it('throws for an unknown timezone', () => {
     expect(() => formatStoreTime(new Date(), 'Not/A_Zone')).toThrow(RangeError);
+  });
+});
+
+describe('needsApproval', () => {
+  it('lets read-only tools and in-store additions run, and asks before destructive or outbound tools', () => {
+    const readOnly = { readOnlyHint: true, destructiveHint: false, openWorldHint: false }; // woo__list_orders
+    const addsInside = { readOnlyHint: false, destructiveHint: false, openWorldHint: false }; // woo__create_product
+    const destructive = { readOnlyHint: false, destructiveHint: true, openWorldHint: false }; // woo__update_order_status
+    const thirdParty = { readOnlyHint: false, destructiveHint: true, openWorldHint: true }; // what the catalog gives mail__/firecrawl__
+    expect(needsApproval({ annotations: readOnly })).toBe(false);
+    expect(needsApproval({ annotations: addsInside })).toBe(false);
+    expect(needsApproval({ annotations: destructive })).toBe(true);
+    expect(needsApproval({ annotations: thirdParty })).toBe(true);
+  });
+
+  it('treats missing hints as the MCP defaults, i.e. asks', () => {
+    expect(needsApproval({})).toBe(true);
+    expect(needsApproval({ annotations: { readOnlyHint: true } })).toBe(true); // read-only, but may reach the outside world
   });
 });
 

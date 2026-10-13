@@ -123,11 +123,18 @@ export class UpstreamClient {
     return status === 404 || (status === 400 && /session/i.test(err.message));
   }
 
-  /** Drops the connection; the next request reconnects (fresh session, fresh era negotiation). */
-  async reset(): Promise<void> {
-    const client = this.client;
-    this.client = null;
-    await client?.close().catch(() => {});
+  /**
+   * Drops the connection for NEW requests: the next one reconnects (fresh session, fresh era negotiation).
+   * Requests already running on the old connection get `graceMs` to finish before it is closed. Closing an SDK
+   * client aborts every request still in flight on it, and a write such as create_product that the upstream already
+   * ran would then be reported as failed. graceMs 0 closes at once (shutdown, or a legacy session that is gone).
+   */
+  async reset(graceMs = 0): Promise<void> {
+    const old = this.client;
+    this.client = null; // connect()'s onclose guard ignores this detached client when it closes later
+    if (!old) return;
+    if (graceMs <= 0) return old.close().catch(() => {});
+    setTimeout(() => void old.close().catch(() => {}), graceMs).unref();
   }
 
   /** Final: drops the connection and refuses to reconnect. */

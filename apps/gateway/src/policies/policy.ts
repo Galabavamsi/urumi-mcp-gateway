@@ -10,10 +10,15 @@ export interface ToolPolicy {
   effect: 'deny';
 }
 
-/** The default seeded once at first start: members can read the store but not change it. */
+/**
+ * The default seeded once at first start: members can read the store but not change it, and cannot send email
+ * from the team's address (customer data from woo plus an outbound channel is exactly what a prompt injection in
+ * an order note would need). Admins can change all of this on the Tool policies page.
+ */
 export const DEFAULT_POLICIES: readonly ToolPolicy[] = [
   { role: 'member', server: 'woo', tool: 'create_product', effect: 'deny' },
   { role: 'member', server: 'woo', tool: 'update_order_status', effect: 'deny' },
+  { role: 'member', server: 'mail', tool: 'send_message', effect: 'deny' },
 ];
 
 export function isToolDenied(

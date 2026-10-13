@@ -13,7 +13,7 @@ import { DbSessionStore } from './auth/sessions.ts';
 import type { ChatDeps } from './chat/index.ts';
 import type { Config } from './config.ts';
 import { SecretBox } from './crypto/secretBox.ts';
-import { openDatabase, pingDatabase } from './db/client.ts';
+import { openDatabase, pingDatabase, waitForPostgres } from './db/client.ts';
 import { runStartupUnderLock } from './db/migrate.ts';
 import { toolPolicies } from './db/schema.ts';
 import { createMcpHttpHandler, mcpRoutes } from './mcp/mcpEndpoint.ts';
@@ -108,9 +108,12 @@ export function createGateway(config: Config, options: GatewayOptions) {
 
   const chatAuth = new ChatTokenAuthenticator({ db, tokens: chatTokens, metrics });
   const internalApp = mcpRoutes({ handler: internalMcp, authenticate: (h) => chatAuth.authenticate(h) });
+  internalApp.onError(handleApiError); // Hono's default would print the raw error, a failed query's values included
 
-  /** Migrations + one-time tasks under the startup lock, then policies and upstream supervision. */
+  /** Waits for Postgres, then migrations + one-time tasks under the startup lock, then policies and supervision. */
   async function start(): Promise<void> {
+    // Only the connection is retried: a migration or seed that fails must still fail fast (and exit).
+    await waitForPostgres(config.db);
     await runStartupUnderLock(config.db, options.migrationsFolder, async () => {
       const stale = await audit.failStalePending();
       if (stale > 0) log('warn', 'closed audit rows left pending by a previous run', { count: stale });

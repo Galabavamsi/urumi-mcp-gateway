@@ -29,6 +29,7 @@ export function ServerStatusBadge({ status }: { status: ServerStatus }) {
 }
 
 const AUDIT_STATUS: Record<AuditStatus, { label: string; className: string }> = {
+  pending: { label: 'Running', className: 'text-warn bg-warn-soft' },
   ok: { label: 'OK', className: 'text-ok bg-ok-soft' },
   error: { label: 'Error', className: 'text-bad bg-bad-soft' },
   unreachable: { label: 'Unreachable', className: 'text-bad bg-bad-soft' },
@@ -42,7 +43,8 @@ export const AUDIT_STATUS_LABELS = Object.fromEntries(
 ) as Record<AuditStatus, string>;
 
 export function AuditStatusChip({ status }: { status: AuditStatus }) {
-  const style = AUDIT_STATUS[status];
+  // A status this build does not know yet (a newer gateway) shows as plain text instead of breaking the page.
+  const style = AUDIT_STATUS[status] ?? { label: status, className: 'text-off bg-off-soft' };
   return (
     <span className={`inline-flex rounded px-2 py-0.5 text-[12.5px] font-medium whitespace-nowrap ${style.className}`}>
       {style.label}

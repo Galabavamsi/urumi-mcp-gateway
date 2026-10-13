@@ -15,6 +15,7 @@ import {
 } from '@modelcontextprotocol/server';
 import { log } from '@urumi/mcp-common';
 import { errorBody } from '../api/errors.ts';
+import { errorForLog } from '../db/errors.ts';
 import type { AuthResult } from '../auth/mcpAuth.ts';
 import type { Principal } from '../types.ts';
 import type { OpenStreams } from './openStreams.ts';
@@ -60,7 +61,8 @@ export function createMcpHttpHandler(router: ToolRouter, name: string): McpHttpH
   return createMcpHandler(createGatewayMcpFactory(router), {
     legacy: 'stateless', // keep serving 2025-11-25 clients (Cursor, Inspector, older Claude Code)
     maxRequestBodySize: 1024 * 1024,
-    onerror: (err) => log('warn', 'mcp handler error', { listener: name, err: err.message }),
+    // e.g. the audit insert failed: that error is a database error whose message would carry the row's values.
+    onerror: (err) => log('warn', 'mcp handler error', { listener: name, ...errorForLog(err) }),
   });
 }
 

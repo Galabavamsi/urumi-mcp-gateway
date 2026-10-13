@@ -111,6 +111,13 @@ kubectl -n store exec mariadb-0 -- sh -c \
 If an upgraded store misbehaves, restore the dump together with the old image. Do not just roll
 back the image.
 
+**Clusters installed before chart 0.1.1 need a one-off step.** Older versions put the chart version
+label on the MariaDB `volumeClaimTemplates`, which cannot be changed, so the first upgrade to 0.1.1
+fails with "updates to statefulset spec ... are forbidden". Run
+`kubectl -n store delete statefulset mariadb --cascade=orphan` once, then upgrade: Helm recreates the
+StatefulSet, which adopts the running pod and keeps the PVC `data-mariadb-0` and its data. The
+volume claim template now carries only labels that never change.
+
 ## Other operations
 
 - **Rotating a Secret.** The chart does not see Secret contents. After changing one, run `kubectl -n store rollout restart deploy/wordpress deploy/woo-mcp`. The bootstrap then re-syncs the admin password and the API key.

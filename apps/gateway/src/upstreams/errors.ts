@@ -58,6 +58,13 @@ export function classifyUpstreamError(err: unknown, timeoutMs?: number): Upstrea
   const blocked = chain.find((e) => e.name === 'UrlNotAllowedError');
   if (blocked) return { kind: 'connection', reason: `blocked by the SSRF guard: ${shortMessage(blocked.message)}` };
 
+  // The size cap in security/ssrf.ts fired. Checked before the connection codes (undici also destroys the socket),
+  // and classified as 'protocol', not 'connection': one oversized result is an error for that call only and must
+  // not flip the server to unreachable; an oversized tools/list fails the health check like any other bad answer.
+  if (chain.some((e) => e.code === 'UND_ERR_RES_EXCEEDED_MAX_SIZE')) {
+    return { kind: 'protocol', reason: 'upstream response too large (over 4 MB)' };
+  }
+
   for (const e of chain) {
     const code = typeof e.code === 'string' ? e.code : undefined;
     if (code && CONNECTION_CODES[code]) return { kind: 'connection', reason: CONNECTION_CODES[code] };

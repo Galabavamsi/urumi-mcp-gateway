@@ -124,13 +124,23 @@ export type FetchLike = (url: string | URL, init?: RequestInit) => Promise<Respo
 const CONNECT_TIMEOUT_MS = 3_000;
 
 /**
+ * Largest upstream HTTP response body the gateway will read. capResult trims tool results to 100k characters, but
+ * only after the whole body was parsed, so without this a hostile or broken upstream could make the gateway buffer
+ * gigabytes and run out of memory (taking every user's MCP and chat sessions with it). undici enforces it per
+ * response and fails the body with UND_ERR_RES_EXCEEDED_MAX_SIZE. It counts every byte of one response, so a
+ * legacy upstream's long-lived GET event stream is cut after 4 MB of keepalives too (days); the SDK reopens it.
+ */
+export const MAX_UPSTREAM_RESPONSE_BYTES = 4 * 1024 * 1024;
+
+/**
  * The fetch the gateway's MCP clients use for every upstream. Allowlisted in-cluster hosts get a plain
  * connection (they resolve to cluster IPs by design); everything else goes through the guarded lookup.
- * Redirects are an error for both.
+ * Redirects are an error for both, and so is a response body over MAX_UPSTREAM_RESPONSE_BYTES.
  */
 export function createUpstreamFetch(allowlist: readonly string[]): FetchLike {
-  const internal = new Agent({ connect: { timeout: CONNECT_TIMEOUT_MS } });
-  const guarded = new Agent({ connect: { timeout: CONNECT_TIMEOUT_MS, lookup: guardedLookup } });
+  const maxResponseSize = MAX_UPSTREAM_RESPONSE_BYTES;
+  const internal = new Agent({ connect: { timeout: CONNECT_TIMEOUT_MS }, maxResponseSize });
+  const guarded = new Agent({ connect: { timeout: CONNECT_TIMEOUT_MS, lookup: guardedLookup }, maxResponseSize });
   return async (input, init) => {
     // Re-checked on every request: net.connect skips `lookup` for IP literals, so those are validated here.
     const url = checkUrlShape(String(input), allowlist);

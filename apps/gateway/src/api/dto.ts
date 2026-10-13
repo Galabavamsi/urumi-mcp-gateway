@@ -1,7 +1,7 @@
 // Row -> JSON shapes from docs/API.md. Secrets (password hashes, key hashes, encrypted credentials) never appear
 // in any of these.
 import type { Catalog } from '../catalog/catalog.ts';
-import { exposedDescription, exposedToolName } from '../catalog/naming.ts';
+import { exposedDescription, exposedToolName, toolLooksLikeInjection } from '../catalog/naming.ts';
 import { apiKeyPrefix } from '../crypto/apiKeys.ts';
 import type { ApiKeyRow, ToolPolicyRow, UserRow } from '../db/schema.ts';
 import { isToolDenied, type ToolPolicy } from '../policies/policy.ts';
@@ -58,6 +58,8 @@ export function serverDto(snapshot: ServerSnapshot, catalog: Catalog, policies: 
         hash: state.toolHashes[tool.name]?.hash ?? null,
         /** When the upstream last changed this tool's definition after we first saw it (null = never). */
         definitionChangedAt: state.toolHashes[tool.name]?.changedAt ?? null,
+        /** Its text reads like an instruction to the model (catalog/naming.ts looksLikeInjection): review it. */
+        suspicious: toolLooksLikeInjection(tool),
         exposed,
         allowedForMe: exposed && !isToolDenied(policies, viewerRole, row.slug, tool.name),
       };

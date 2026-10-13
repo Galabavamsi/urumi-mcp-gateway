@@ -175,6 +175,7 @@ version (`19`) needs `pg_upgrade` or dump/restore and is not done by this chart.
 
 ## Other operations
 
+- **Clusters installed before chart 0.1.1 need a one-off step.** Older versions put the chart version label on the Postgres `volumeClaimTemplates`, which cannot be changed, so the first upgrade to 0.1.1 fails with "updates to statefulset spec ... are forbidden". Run `kubectl -n platform delete statefulset postgres --cascade=orphan` once, then upgrade: Helm recreates the StatefulSet, which adopts the running pod and keeps the PVC `data-postgres-0` and its data.
 - **Volume size is fixed at first install.** A StatefulSet's `volumeClaimTemplates` cannot be changed, so editing `postgres.persistence.*` afterwards makes `helm upgrade` fail with "updates to statefulset spec ... are forbidden" (local-path volumes cannot grow anyway). To move to a bigger volume: back up, uninstall, delete the PVC, reinstall, restore.
 - **Uninstalling.** `helm uninstall platform -n platform` keeps the data: the Postgres PVC is retained (`persistentVolumeClaimRetentionPolicy: Retain`) and a reinstall picks it up again. To really wipe it, also run `kubectl -n platform delete pvc data-postgres-0`.
 - **Readiness.** `/readyz` checks Postgres only. An unreachable upstream MCP server must never take the whole gateway out of the Service; the dashboard shows it as Unreachable instead.

@@ -107,8 +107,10 @@ spec:
   volumeClaimTemplates:
     - metadata:
         name: data
+        # Only labels that never change: volumeClaimTemplates cannot be updated, so a label carrying the chart
+        # version (helm.sh/chart) would make every chart version bump fail with "updates ... are forbidden".
         labels:
-          {{- include "woo-store.labels" (dict "root" . "component" "mariadb") | nindent 10 }}
+          {{- include "woo-store.podLabels" (dict "root" . "component" "mariadb") | nindent 10 }}
       spec:
         accessModes: ["ReadWriteOnce"]
         {{- with .Values.mariadb.persistence.storageClass }}

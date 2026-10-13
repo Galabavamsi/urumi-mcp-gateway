@@ -404,6 +404,28 @@ describeDb('gateway with Postgres and real upstream MCP servers', () => {
     expect((await api('/servers', { method: 'POST', cookie: memberCookie, body: { slug: 'm', url: 'x', name: 'x', authType: 'none' } })).status).toBe(403);
   });
 
+  it('a stored credential never follows a change of URL origin or auth header', async () => {
+    const alphaUrl = (await servers(adminCookie)).find((s) => s.slug === 'alpha').url as string;
+    const created = await api('/servers', {
+      method: 'POST',
+      cookie: adminCookie,
+      body: { slug: 'cred', name: 'Credential test', url: alphaUrl, authType: 'bearer', credential: ALPHA_TOKEN },
+    });
+    expect(created.status).toBe(201);
+    const patch = (body: Record<string, unknown>) => api(`/servers/${created.body.id}`, { method: 'PATCH', cookie: adminCookie, body });
+    const elsewhere = alphaUrl.replace(/:\d+\//, ':1/'); // same host, another port: another origin
+
+    const moved = await patch({ url: elsewhere });
+    expect(moved.status).toBe(422);
+    expect(moved.body.error.code).toBe('credential_required');
+    const asHeader = await patch({ authType: 'header', headerName: 'x-api-key' });
+    expect(asHeader.body.error.code).toBe('credential_required');
+    // Same origin (only the path or query changes), or a new credential typed in: fine.
+    expect((await patch({ url: `${alphaUrl}?team=urumi`, name: 'Credential test 2' })).status).toBe(200);
+    expect((await patch({ url: elsewhere, credential: 'a-new-credential-for-the-new-host' })).status).toBe(200);
+    expect((await api(`/servers/${created.body.id}`, { method: 'DELETE', cookie: adminCookie })).status).toBe(204);
+  });
+
   it('a dead upstream fails fast with isError and shows as unreachable, with its tools still listed', async () => {
     const created = await api('/servers', {
       method: 'POST',
@@ -503,6 +525,27 @@ describeDb('gateway with Postgres and real upstream MCP servers', () => {
 
     const bogus = await fetch(`http://127.0.0.1:${portOf(internalServer)}/mcp`, { method: 'POST', headers: { authorization: `Bearer ${adminKey}` } });
     expect(bogus.status).toBe(401); // API keys are not accepted on the internal listener
+  });
+
+  it('an admin who is demoted loses the keys they issued for others and their open invites', async () => {
+    const invite = await api('/invites', { method: 'POST', cookie: adminCookie, body: { email: 'second-admin@example.com', role: 'admin' } });
+    const token = invite.body.inviteUrl.split('/').pop();
+    const accepted = await api(`/invites/${token}/accept`, { method: 'POST', body: { name: 'Second Admin', password: 'second-admin-pass-1' } });
+    expect(accepted.status).toBe(201);
+    const secondAdmin = (accepted.headers.get('set-cookie') ?? '').split(';')[0] ?? '';
+
+    const issued = await api('/keys', { method: 'POST', cookie: secondAdmin, body: { name: 'issued by admin 2', userId: memberId } });
+    const own = await api('/keys', { method: 'POST', cookie: memberCookie, body: { name: "member's own" } });
+    const laterInvite = await api('/invites', { method: 'POST', cookie: secondAdmin, body: { email: 'later@example.com', role: 'admin' } });
+    const laterToken = laterInvite.body.inviteUrl.split('/').pop();
+
+    const demoted = await api(`/users/${accepted.body.user.id}`, { method: 'PATCH', cookie: adminCookie, body: { role: 'member' } });
+    expect(demoted.status).toBe(200);
+
+    await expect(connect(issued.body.key)).rejects.toThrow(); // the secret admin 2 saw no longer works
+    const stillWorks = await connect(own.body.key); // keys the member made themselves are untouched
+    await stillWorks.close();
+    expect((await api(`/invites/${laterToken}`)).status).toBe(404); // and their open invite link is gone
   });
 
   it('keeps at least one active admin, and disabling a user revokes their access', async () => {

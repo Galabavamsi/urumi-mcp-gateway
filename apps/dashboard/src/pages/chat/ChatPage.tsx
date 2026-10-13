@@ -4,8 +4,8 @@ import { RotateCcw, Send, Square } from 'lucide-react';
 import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { errorMessage } from '../../api/client';
 import { useConfig } from '../../api/queries';
-import { streamChat } from '../../chat/stream';
-import { applyEvent, buildHistory, type AssistantTurn, type Turn } from '../../chat/transcript';
+import { streamChat, type ChatRequestBody } from '../../chat/stream';
+import { MAX_MESSAGE_CHARS, applyEvent, buildHistory, type AssistantTurn, type Turn } from '../../chat/transcript';
 import { AssistantReply, UserMessage } from './Messages';
 
 // Plain counter ids: crypto.randomUUID() is unavailable on plain-http origins like our local cluster.
@@ -40,14 +40,32 @@ export function ChatPage() {
     const history = buildHistory([...turns, userTurn]);
     setTurns((current) => [...current, userTurn, { role: 'assistant', id: assistantId, state: 'streaming', blocks: [] }]);
     setDraft('');
+    await stream({ messages: history }, assistantId);
+  }
 
+  /**
+   * The user answered an approval request: the same reply continues (the gateway runs, or skips, the stored tool
+   * calls and the model goes on). Only the request id and yes/no are sent.
+   */
+  async function answer(turn: AssistantTurn, approve: boolean) {
+    if (!turn.approval || turn.approval.answer) return;
+    const { id } = turn.approval;
+    const decided = approve ? ('approved' as const) : ('declined' as const);
+    setTurns((current) =>
+      current.map((t) => (t.id === turn.id && t.role === 'assistant' && t.approval ? { ...t, state: 'streaming', approval: { ...t.approval, answer: decided } } : t)),
+    );
+    await stream({ confirm: { id, approve } }, turn.id);
+  }
+
+  /** Streams one request's events into the assistant turn `assistantId`. */
+  async function stream(body: ChatRequestBody, assistantId: string) {
     const updateReply = (change: (turn: AssistantTurn) => AssistantTurn) =>
       setTurns((current) => current.map((t) => (t.id === assistantId && t.role === 'assistant' ? change(t) : t)));
 
     const controller = new AbortController();
     abortRef.current = controller;
     try {
-      await streamChat(history, { signal: controller.signal, onEvent: (event) => updateReply((t) => applyEvent(t, event)) });
+      await streamChat(body, { signal: controller.signal, onEvent: (event) => updateReply((t) => applyEvent(t, event)) });
       // The stream ended without `done` or `error`: the connection dropped mid-answer.
       updateReply((t) => (t.state === 'streaming' ? { ...t, state: 'failed', error: 'The connection closed before the reply finished.' } : t));
     } catch (err) {
@@ -106,10 +124,14 @@ export function ChatPage() {
         </div>
       </header>
 
-      <Transcript turns={turns} onSuggestion={(text) => {
-        setDraft(text);
-        inputRef.current?.focus();
-      }} />
+      <Transcript
+        turns={turns}
+        onAnswer={(turn, approve) => void answer(turn, approve)}
+        onSuggestion={(text) => {
+          setDraft(text);
+          inputRef.current?.focus();
+        }}
+      />
 
       <form onSubmit={submit} className="mt-4 rounded-xl border border-line-strong bg-surface p-2 focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/25">
         <label htmlFor={inputId} className="sr-only">
@@ -122,11 +144,15 @@ export function ChatPage() {
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={onKeyDown}
+          maxLength={MAX_MESSAGE_CHARS}
           placeholder="Ask about orders, products or the supplier catalog"
           className="block max-h-40 w-full resize-none bg-transparent px-2 py-1.5 text-[15px] leading-relaxed text-ink outline-none placeholder:text-ink-3"
         />
         <div className="flex items-center justify-between gap-2 px-1 pt-1">
-          <p className="text-xs text-ink-3">Enter to send, Shift+Enter for a new line</p>
+          <p className="text-xs text-ink-3">
+            Enter to send, Shift+Enter for a new line
+            {draft.length > MAX_MESSAGE_CHARS * 0.9 && ` · ${draft.length.toLocaleString()} / ${MAX_MESSAGE_CHARS.toLocaleString()} characters`}
+          </p>
           {streaming ? (
             <button type="button" className="btn btn-secondary btn-sm" onClick={() => abortRef.current?.abort()}>
               <Square aria-hidden="true" className="size-3.5 fill-current" />
@@ -144,7 +170,13 @@ export function ChatPage() {
   );
 }
 
-function Transcript({ turns, onSuggestion }: { turns: Turn[]; onSuggestion: (text: string) => void }) {
+interface TranscriptProps {
+  turns: Turn[];
+  onSuggestion: (text: string) => void;
+  onAnswer: (turn: AssistantTurn, approve: boolean) => void;
+}
+
+function Transcript({ turns, onSuggestion, onAnswer }: TranscriptProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const pinnedToBottom = useRef(true);
   const lastTurnCount = useRef(0);
@@ -194,13 +226,21 @@ function Transcript({ turns, onSuggestion }: { turns: Turn[]; onSuggestion: (tex
           </ul>
           <p className="mt-4 text-sm text-ink-2">
             Picking one fills in the message box so you can edit it first. Tools that change the store only work for
-            admins.
+            admins, and the agent asks for your approval before anything that changes existing data or leaves the team
+            (order status, email, the web).
           </p>
         </div>
       ) : (
         <ol className="mx-auto flex max-w-[820px] flex-col gap-5" aria-label="Conversation">
           {turns.map((turn) => (
-            <li key={turn.id}>{turn.role === 'user' ? <UserMessage text={turn.text} /> : <AssistantReply turn={turn} />}</li>
+            <li key={turn.id}>
+              {turn.role === 'user' ? (
+                <UserMessage text={turn.text} />
+              ) : (
+                // Only the newest reply can still be answered: a new message abandons an older approval request.
+                <AssistantReply turn={turn} onAnswer={turn === last ? (approve) => onAnswer(turn, approve) : undefined} />
+              )}
+            </li>
           ))}
         </ol>
       )}

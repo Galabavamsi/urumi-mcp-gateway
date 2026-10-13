@@ -18,7 +18,7 @@ async function collect(response: Response): Promise<{ events: ChatEvent[]; init:
   const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => response);
   vi.stubGlobal('fetch', fetchMock);
   const events: ChatEvent[] = [];
-  await streamChat([{ role: 'user', content: 'orders today?' }], {
+  await streamChat({ messages: [{ role: 'user', content: 'orders today?' }] }, {
     signal: new AbortController().signal,
     onEvent: (event) => events.push(event),
   });
@@ -76,7 +76,7 @@ describe('streamChat', () => {
         }),
       ),
     );
-    const promise = streamChat([{ role: 'user', content: 'hi' }], {
+    const promise = streamChat({ messages: [{ role: 'user', content: 'hi' }] }, {
       signal: new AbortController().signal,
       onEvent: () => {},
     });
@@ -87,7 +87,24 @@ describe('streamChat', () => {
   it('rejects on malformed event data', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => sseResponse(['event: text\ndata: {not json\n\n'])));
     await expect(
-      streamChat([{ role: 'user', content: 'hi' }], { signal: new AbortController().signal, onEvent: () => {} }),
+      streamChat({ messages: [{ role: 'user', content: 'hi' }] }, { signal: new AbortController().signal, onEvent: () => {} }),
     ).rejects.toThrow(/malformed "text" event/);
+  });
+});
+
+describe('streamChat approval answers', () => {
+  it('POSTs only the approval id and the answer, and reads confirm_required events', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      sseResponse([
+        'event: confirm_required\ndata: {"id":"ap-1","calls":[{"id":"t1","name":"woo__update_order_status","args":{"id":34}}]}\n\n',
+      ]),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const events: ChatEvent[] = [];
+    await streamChat({ confirm: { id: 'ap-1', approve: true } }, { signal: new AbortController().signal, onEvent: (e) => events.push(e) });
+    expect(JSON.parse(fetchMock.mock.calls[0]![1]!.body as string)).toEqual({ confirm: { id: 'ap-1', approve: true } });
+    expect(events).toEqual([
+      { type: 'confirm_required', id: 'ap-1', calls: [{ id: 't1', name: 'woo__update_order_status', args: { id: 34 } }] },
+    ]);
   });
 });

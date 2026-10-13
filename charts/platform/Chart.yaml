@@ -5,7 +5,7 @@ description: >-
   the dashboard SPA, the gateway's Postgres, one Ingress (app.<domain>) and default-deny NetworkPolicies.
 type: application
 # Chart version: bump on any template or values change.
-version: 0.1.0
+version: 0.1.1
 # The gateway and dashboard versions are their image tags (git SHAs), set at deploy time.
 appVersion: "0.1.0"
 kubeVersion: ">=1.30.0-0"

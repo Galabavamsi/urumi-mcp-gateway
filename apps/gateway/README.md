@@ -11,7 +11,7 @@ chat agent. It also serves the dashboard's REST API. Contracts: `docs/API.md` (H
 POST /mcp  (Authorization: Bearer mgw_<keyId>_<secret>)
   -> auth/mcpAuth.ts       look the key up by keyId, HMAC compare, refuse revoked keys / disabled users (no cache)
   -> mcp/mcpEndpoint.ts    SDK createMcpHandler (2026-07-28 + legacy 2025-11-25), low-level Server, 2 handlers
-  -> mcp/toolRouter.ts     THE choke point: lookup -> enabled? -> policy -> audit 'pending' -> call -> cap -> audit done
+  -> mcp/toolRouter.ts     THE choke point: lookup -> enabled? -> policy -> rate limit -> audit 'pending' -> call -> cap -> audit done
   -> upstreams/manager.ts  per-server client (lazy, rebuilt after errors), timeout + caller's abort signal
   -> upstreams/upstreamClient.ts -> security/ssrf.ts fetch (connect-time IP check, no redirects) -> upstream
 ```
@@ -33,12 +33,12 @@ JWT for the logged-in user (`auth/chatToken.ts`), so its calls get the same poli
 | `security/ssrf.ts` | URL rules for upstreams + the guarded fetch |
 | `upstreams/` | Client per server, health loop, status and reasons, error classification |
 | `catalog/` | Exposed names (`<slug>__<tool>`), description cleaning, definition hashes, routing table |
-| `policies/policy.ts` | Member deny rules (admins unrestricted) |
+| `policies/policy.ts`, `policies/rateLimit.ts` | Member deny rules (admins unrestricted); per-user tool-call limits |
 | `mcp/` | MCP handlers and the tool router; closing open streams on revocation |
 | `audit/auditLog.ts` | Audit rows, cursor pagination |
 | `api/` | REST routes for the dashboard |
 | `metrics.ts`, `http.ts` | Prometheus metrics; listeners |
-| `chat/` | The chat agent (separate module, mounted at `/api/chat`) |
+| `chat/` | The chat agent (separate module, mounted at `/api/chat`); `chat/confirm.ts` decides which tools wait for the user's approval |
 
 ## Develop and test
 

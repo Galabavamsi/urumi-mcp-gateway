@@ -8,13 +8,14 @@ import { Hono } from 'hono';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { AppEnv, SessionUser } from '../types.ts';
 import { createChatRoutes, type ChatDeps } from './index.ts';
-import { MAX_ITERATIONS, MODEL_RESULT_CHARS, PREVIEW_CHARS } from './loop.ts';
+import { DECLINED_TEXT, MAX_ITERATIONS, MODEL_RESULT_CHARS, PREVIEW_CHARS } from './loop.ts';
 import { startFakeToolServer, type FakeToolServer } from './testing/fake-tool-server.ts';
 import { eventsNamed, parseSse } from './testing/sse.ts';
 import { reply, scriptedMessages, textBlock, thinkingBlock, toolUseBlock, type Script } from './testing/scripted-messages.ts';
 
 const TOKEN = 'chat-token-for-tests-0123456789';
 const USER: SessionUser = { id: 'user-a', email: 'a@example.test', name: 'User A', role: 'admin' };
+const OTHER_USER: SessionUser = { id: 'user-b', email: 'b@example.test', name: 'User B', role: 'member' };
 
 let gateway: FakeToolServer;
 beforeAll(async () => {
@@ -28,9 +29,9 @@ function appWith(script: Script, overrides: Partial<ChatDeps> = {}) {
   const llm = scriptedMessages(script);
   const signChatToken = vi.fn(async (_userId: string) => TOKEN);
   const app = new Hono<AppEnv>();
-  // Stands in for the core's session middleware.
+  // Stands in for the core's session middleware. The header lets a test act as a second user.
   app.use('*', async (c, next) => {
-    c.set('user', USER);
+    c.set('user', c.req.header('x-test-user') === OTHER_USER.id ? OTHER_USER : USER);
     await next();
   });
   app.route(
@@ -76,8 +77,8 @@ describe('POST /api/chat', () => {
     expect(events.map((e) => e.event)).toEqual(['tools', 'tool_call', 'tool_result', 'text', 'done']);
 
     const [tools] = eventsNamed(events, 'tools');
-    expect(tools?.names.sort()).toEqual(['demo__big_report', 'demo__fail', 'demo__get_time']);
-    expect(tools?.count).toBe(3);
+    expect(tools?.names.sort()).toEqual(['demo__big_report', 'demo__fail', 'demo__get_time', 'demo__send']);
+    expect(tools?.count).toBe(4);
     expect(eventsNamed(events, 'tool_call')).toEqual([{ id: 'tu_1', name: 'demo__get_time', args: { timezone: 'Asia/Kolkata' } }]);
     const [result] = eventsNamed(events, 'tool_result');
     expect(result).toMatchObject({ id: 'tu_1', name: 'demo__get_time', ok: true });
@@ -176,6 +177,8 @@ describe('POST /api/chat', () => {
     ['extra field', { messages: [{ role: 'user', content: 'hi' }], model: 'claude-opus-5-5' }],
     ['content too long', ask('x'.repeat(10_001))],
     ['too many messages', { messages: Array.from({ length: 51 }, () => ({ role: 'user', content: 'hi' })) }],
+    ['an approval answer without a valid id', { confirm: { id: 'not-a-uuid', approve: true } }],
+    ['an approval answer with extra fields', { confirm: { id: '00000000-0000-4000-8000-000000000000', approve: true, args: {} } }],
     ['invalid JSON', '{"messages": ['],
   ])('answers 400 invalid_request for %s', async (_case, body) => {
     const { app, llm } = appWith(() => reply([textBlock('never')], 'end_turn'));
@@ -200,8 +203,8 @@ describe('POST /api/chat', () => {
     expect(gateway.calls.length).toBe(callsBefore);
   });
 
-  it('passes a refusal through as the stop reason', async () => {
-    const { app } = appWith(() => reply([], 'refusal'));
+  it('passes a refusal through as the stop reason, without the partial text of the refused response', async () => {
+    const { app } = appWith(() => reply([textBlock('Sure, here is the first half of')], 'refusal'));
     const { events } = await chat(app, ask('something the model declines'));
     expect(events.map((e) => e.event)).toEqual(['tools', 'done']);
     expect(eventsNamed(events, 'done')[0]?.stopReason).toBe('refusal');
@@ -247,6 +250,126 @@ describe('POST /api/chat', () => {
     expect(llm.requests).toHaveLength(2);
     // No done and no error: nobody is listening any more.
     expect(events.map((e) => e.event)).toEqual(['tools', 'tool_call', 'tool_result']);
+  });
+
+  it('pauses before a tool that needs approval: the tool is announced but not run', async () => {
+    const { app, llm } = appWith(() =>
+      reply([textBlock('I will send it.'), toolUseBlock('tu_send', 'demo__send', { to: 'x@example.test', text: 'hi' })], 'tool_use'),
+    );
+    const callsBefore = gateway.calls.length;
+
+    const { events } = await chat(app, ask('Send hi to x@example.test'));
+
+    expect(events.map((e) => e.event)).toEqual(['tools', 'text', 'tool_call', 'confirm_required', 'done']);
+    const [confirm] = eventsNamed(events, 'confirm_required');
+    expect(confirm?.id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(confirm?.calls).toEqual([{ id: 'tu_send', name: 'demo__send', args: { to: 'x@example.test', text: 'hi' } }]);
+    expect(eventsNamed(events, 'done')[0]).toMatchObject({ stopReason: 'needs_confirmation', iterations: 1 });
+    expect(gateway.calls.length).toBe(callsBefore); // nothing reached the MCP server
+    expect(llm.requests).toHaveLength(1);
+  });
+
+  it('approving runs exactly the stored call, then the model continues the same turn', async () => {
+    const send = toolUseBlock('tu_send', 'demo__send', { to: 'x@example.test', text: 'hi' });
+    const { app, llm } = appWith((_request, call) =>
+      call === 0 ? reply([thinkingBlock(), send], 'tool_use') : reply([textBlock('Sent.')], 'end_turn'),
+    );
+    const paused = await chat(app, ask('Send hi to x@example.test'));
+    const id = eventsNamed(paused.events, 'confirm_required')[0]?.id;
+
+    const { events } = await chat(app, { confirm: { id, approve: true } });
+
+    expect(events.map((e) => e.event)).toEqual(['tools', 'tool_result', 'text', 'done']);
+    expect(eventsNamed(events, 'tool_result')[0]).toMatchObject({ id: 'tu_send', ok: true, preview: 'sent to x@example.test' });
+    expect(gateway.calls.at(-1)).toEqual({ name: 'demo__send', args: { to: 'x@example.test', text: 'hi' } });
+    // Usage and model calls are counted over the whole turn, across the pause.
+    expect(eventsNamed(events, 'done')).toEqual([{ stopReason: 'end_turn', iterations: 2, usage: { inputTokens: 26, outputTokens: 10 } }]);
+    // The model continues from its own messages (thinking block included), now followed by the tool result.
+    expect(llm.requests[1]?.messages.slice(1)).toEqual([
+      { role: 'assistant', content: [thinkingBlock(), send] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_send', content: 'sent to x@example.test', is_error: false }] },
+    ]);
+  });
+
+  it('declining never calls the tool and tells the model the user said no', async () => {
+    const time = toolUseBlock('tu_time', 'demo__get_time', { timezone: 'UTC' });
+    const send = toolUseBlock('tu_send', 'demo__send', { to: 'x@example.test', text: 'hi' });
+    const { app, llm } = appWith((_request, call) =>
+      call === 0 ? reply([time, send], 'tool_use') : reply([textBlock('OK, I did not send it.')], 'end_turn'),
+    );
+    const paused = await chat(app, ask('What time is it? Send it to x@example.test'));
+    const confirm = eventsNamed(paused.events, 'confirm_required')[0];
+    expect(confirm?.calls.map((c) => c.name)).toEqual(['demo__send']); // only the call that needs approval is asked about
+    const callsBefore = gateway.calls.length;
+
+    const { events } = await chat(app, { confirm: { id: confirm?.id, approve: false } });
+
+    // The read-only call of the same response still runs, in its place; the outbound one never does.
+    expect(gateway.calls.slice(callsBefore).map((c) => c.name)).toEqual(['demo__get_time']);
+    expect(eventsNamed(events, 'tool_result').map((r) => [r.id, r.ok])).toEqual([
+      ['tu_time', true],
+      ['tu_send', false],
+    ]);
+    const results = llm.requests[1]?.messages.at(-1)?.content;
+    expect(Array.isArray(results) && results.at(-1)).toEqual({ type: 'tool_result', tool_use_id: 'tu_send', content: DECLINED_TEXT, is_error: true });
+  });
+
+  it('an approval can be answered once, only by its own user, and only for 5 minutes', async () => {
+    let clock = new Date('2026-10-13T10:00:00Z');
+    const script: Script = (_request, call) =>
+      call % 2 === 0
+        ? reply([toolUseBlock('tu_send', 'demo__send', { to: 'x@example.test', text: 'hi' })], 'tool_use')
+        : reply([textBlock('Done.')], 'end_turn');
+    const { app } = appWith(script, { now: () => clock });
+    const pause = async () => eventsNamed((await chat(app, ask('Send hi'))).events, 'confirm_required')[0]?.id;
+    const answer = (id: unknown, user = USER) =>
+      app.request('/api/chat', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-user': user.id },
+        body: JSON.stringify({ confirm: { id, approve: true } }),
+      });
+
+    const first = await pause();
+    expect((await answer(first, OTHER_USER)).status).toBe(404); // not B's to answer
+    const approved = await answer(first);
+    expect(approved.status).toBe(200);
+    await approved.text();
+    const reused = await answer(first);
+    expect(reused.status).toBe(404);
+    expect(await reused.json()).toMatchObject({ error: { code: 'approval_not_found' } });
+
+    const late = await pause();
+    clock = new Date(clock.getTime() + 5 * 60 * 1000 + 1);
+    expect((await answer(late)).status).toBe(404);
+  });
+
+  it('answers 429 while a reply is already running for the same user (other users are not affected)', async () => {
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => (release = resolve));
+    const slowModel: ChatDeps['messagesApi'] = {
+      create: async () => {
+        await released;
+        return reply([textBlock('done')], 'end_turn');
+      },
+    };
+    const { app } = appWith(() => reply([], 'end_turn'), { messagesApi: slowModel });
+    const post = (question: string, user = USER) =>
+      app.request('/api/chat', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-user': user.id },
+        body: JSON.stringify(ask(question)),
+      });
+
+    const first = await post('one'); // the stream is open; its model call is waiting
+    const second = await post('two');
+    expect(second.status).toBe(429);
+    expect(await second.json()).toMatchObject({ error: { code: 'rate_limited' } });
+    const other = await post('three', OTHER_USER);
+    expect(other.status).toBe(200);
+
+    release();
+    await Promise.all([first.text(), other.text()]);
+    expect((await post('four')).status).toBe(200); // free again once the first reply finished
   });
 
   it('refuses to start with an unknown STORE_TZ', () => {

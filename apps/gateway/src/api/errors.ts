@@ -4,6 +4,7 @@ import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { z } from 'zod';
 import { log } from '@urumi/mcp-common';
+import { errorForLog } from '../db/errors.ts';
 
 export class ApiError extends Error {
   constructor(
@@ -22,11 +23,14 @@ export function errorBody(code: string, message: string) {
   return { error: { code, message } };
 }
 
-/** Hono onError handler: known errors keep their status, anything else is a logged 500 without details. */
+/**
+ * Hono onError handler: known errors keep their status, anything else is a logged 500 without details. The log line
+ * never carries a failed query's bound values (db/errors.ts).
+ */
 export function handleApiError(err: Error, c: Context): Response {
   if (err instanceof ApiError) return c.json(errorBody(err.code, err.message), err.status);
   if (err instanceof HTTPException) return c.json(errorBody('http_error', err.message || 'request rejected'), err.status);
-  log('error', 'unhandled API error', { path: c.req.path, method: c.req.method, err: err.message });
+  log('error', 'unhandled API error', { path: c.req.path, method: c.req.method, ...errorForLog(err) });
   return c.json(errorBody('internal_error', 'something went wrong'), 500);
 }
 

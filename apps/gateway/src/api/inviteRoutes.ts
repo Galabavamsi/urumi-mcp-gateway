@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { requireAdmin, requireSession, setSessionCookie } from '../auth/middleware.ts';
 import { hmacHex, randomToken } from '../crypto/hashing.ts';
 import { hashPassword } from '../crypto/passwords.ts';
+import { pgErrorCode } from '../db/errors.ts';
 import { invites, users } from '../db/schema.ts';
 import type { AppEnv } from '../types.ts';
 import type { ApiDeps } from './deps.ts';
@@ -101,24 +102,31 @@ export function inviteRoutes(deps: ApiDeps): Hono<AppEnv> {
     if (!TOKEN_SHAPE.test(token)) throw inviteNotFound();
     const passwordHash = await hashPassword(password); // slow on purpose; done before the transaction
 
-    const user = await db.transaction(async (tx) => {
-      // FOR UPDATE: two simultaneous accepts of the same link cannot both create a user.
-      const [invite] = await tx
-        .select()
-        .from(invites)
-        .where(and(eq(invites.tokenHash, hashToken(token)), isNull(invites.acceptedAt), gt(invites.expiresAt, new Date())))
-        .for('update');
-      if (!invite) throw inviteNotFound();
-      const [existing] = await tx.select({ id: users.id }).from(users).where(eq(users.email, invite.email));
-      if (existing) throw new ApiError(409, 'email_taken', 'a user with this email already exists');
+    const user = await db
+      .transaction(async (tx) => {
+        // FOR UPDATE: two simultaneous accepts of the same link cannot both create a user.
+        const [invite] = await tx
+          .select()
+          .from(invites)
+          .where(and(eq(invites.tokenHash, hashToken(token)), isNull(invites.acceptedAt), gt(invites.expiresAt, new Date())))
+          .for('update');
+        if (!invite) throw inviteNotFound();
+        const [existing] = await tx.select({ id: users.id }).from(users).where(eq(users.email, invite.email));
+        if (existing) throw new ApiError(409, 'email_taken', 'a user with this email already exists');
 
-      const [created] = await tx
-        .insert(users)
-        .values({ email: invite.email, name, role: invite.role, passwordHash, lastSeenAt: new Date() })
-        .returning();
-      await tx.update(invites).set({ acceptedAt: new Date() }).where(eq(invites.id, invite.id));
-      return created;
-    });
+        const [created] = await tx
+          .insert(users)
+          .values({ email: invite.email, name, role: invite.role, passwordHash, lastSeenAt: new Date() })
+          .returning();
+        await tx.update(invites).set({ acceptedAt: new Date() }).where(eq(invites.id, invite.id));
+        return created;
+      })
+      .catch((err: unknown) => {
+        // Two DIFFERENT open invites for one email accepted at the same moment both pass the check above; the unique
+        // email index stops the second (SQLSTATE 23505). Answer like the check would, not with a 500.
+        if (pgErrorCode(err) === '23505') throw new ApiError(409, 'email_taken', 'a user with this email already exists');
+        throw err;
+      });
     if (!user) throw new Error('user insert returned no row');
 
     const session = await sessions.create(user.id);

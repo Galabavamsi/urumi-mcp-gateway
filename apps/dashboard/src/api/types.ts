@@ -57,8 +57,12 @@ export interface ServerTool {
   exposedName: string;
   description: string;
   /** Hash of the tool definition; a change means the upstream changed the tool. */
-  hash: string;
-  /** False when the server's tool allowlist hides this tool. */
+  hash: string | null;
+  /** When the upstream changed this tool's definition after the gateway first saw it (a possible "rug pull"). */
+  definitionChangedAt: string | null;
+  /** Its text reads like instructions to the model (the gateway's prompt-injection lint): review it. */
+  suspicious: boolean;
+  /** False when MCP clients do not see this tool: server disabled, hidden by the allowlist, or a name clash. */
   exposed: boolean;
   /** False when a member policy denies this tool to the current user. */
   allowedForMe: boolean;
@@ -111,7 +115,8 @@ export interface Policy {
 
 export type PolicyInput = Omit<Policy, 'id'>;
 
-export type AuditStatus = 'ok' | 'error' | 'timeout' | 'unreachable' | 'denied' | 'auth_rejected';
+/** 'pending' = the call is still running (the gateway writes the row before it calls the upstream). */
+export type AuditStatus = 'pending' | 'ok' | 'error' | 'timeout' | 'unreachable' | 'denied' | 'auth_rejected';
 export type AuditVia = 'mcp' | 'chat';
 
 export interface AuditEntry {

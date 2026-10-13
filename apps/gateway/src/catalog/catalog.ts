@@ -3,7 +3,17 @@
 // whenever a server or its tools change.
 import { log } from '@urumi/mcp-common';
 import type { CachedTool } from '../db/schema.ts';
-import { capLength, exposedDescription, exposedToolName, stripInvisible } from './naming.ts';
+import {
+  MAX_SCHEMA_CHARS,
+  MAX_TITLE,
+  capLength,
+  containsInvisible,
+  exposedAnnotations,
+  exposedDescription,
+  exposedToolName,
+  sanitizeInputSchema,
+  stripInvisible,
+} from './naming.ts';
 
 /** A tool as MCP clients and models see it through the gateway. */
 export interface ExposedTool {
@@ -20,6 +30,8 @@ export interface CatalogEntry {
   serverSlug: string;
   originalName: string;
   serverEnabled: boolean;
+  /** Our own in-cluster server (see ServerSnapshot.inCluster); false = third party. */
+  serverInCluster: boolean;
   tool: ExposedTool;
 }
 
@@ -27,6 +39,8 @@ export interface CatalogServer {
   id: string;
   slug: string;
   enabled: boolean;
+  /** Our own in-cluster server: its tool annotations are trusted. Third-party ones get the worst-case hints. */
+  inCluster: boolean;
   toolAllowlist: string[] | null;
   tools: readonly CachedTool[];
 }
@@ -39,7 +53,7 @@ export interface Catalog {
    * never splits names on `__`. Disabled servers are in it only so a call can be rejected with a clear message.
    */
   byExposedName: Map<string, CatalogEntry>;
-  /** serverId -> (original tool name -> exposed name, or null when hidden by the allowlist or a name clash). */
+  /** serverId -> (original tool name -> exposed name, or null when not exposed: allowlist, name clash, bad schema). */
   exposure: Map<string, Map<string, string | null>>;
 }
 
@@ -68,20 +82,29 @@ export function buildCatalog(servers: readonly CatalogServer[]): Catalog {
         names.set(tool.name, null);
         continue;
       }
+      const inputSchema = exposableSchema(server.slug, tool);
+      if (!inputSchema) {
+        names.set(tool.name, null);
+        continue;
+      }
+      const annotations = exposedAnnotations(tool.annotations, server.inCluster);
       const entry: CatalogEntry = {
         exposedName,
         serverId: server.id,
         serverSlug: server.slug,
         originalName: tool.name,
         serverEnabled: server.enabled,
+        serverInCluster: server.inCluster,
         tool: {
           name: exposedName,
-          ...(tool.title && { title: capLength(stripInvisible(tool.title), 200) }),
+          ...(tool.title && { title: capLength(stripInvisible(tool.title), MAX_TITLE) }),
           description: exposedDescription(server.slug, tool.description),
-          // Passed through unchanged: clients validate arguments against the upstream's own schema.
-          inputSchema: tool.inputSchema,
-          // Kept: readOnlyHint / destructiveHint drive the chat agent's confirmation step.
-          ...(tool.annotations && { annotations: tool.annotations }),
+          // The upstream's own schema (clients validate arguments against it), with only its description and
+          // title texts cleaned like the tool description.
+          inputSchema,
+          // Only the four MCP hints and a title; a third-party server's hints are replaced by the worst case.
+          // The chat agent asks the user before running any tool these mark as destructive or outbound (chat/confirm.ts).
+          ...(annotations && { annotations }),
           // Deliberately NOT passed: outputSchema (the gateway may truncate results, so it cannot promise a
           // schema) and _meta (arbitrary upstream data).
         },
@@ -92,4 +115,24 @@ export function buildCatalog(servers: readonly CatalogServer[]): Catalog {
     }
   }
   return { listed, byExposedName, exposure };
+}
+
+/**
+ * The schema to expose, or null (tool not exposed, with a warning that names only the server and tool):
+ *   - over MAX_SCHEMA_CHARS: it would be sent with every tools/list and every chat request;
+ *   - invisible characters left after cleaning (in a property name, enum or default value): those cannot be
+ *     cleaned without changing what the upstream accepts, and a normal tool never has them.
+ */
+function exposableSchema(slug: string, tool: CachedTool): CachedTool['inputSchema'] | null {
+  const size = JSON.stringify(tool.inputSchema).length;
+  if (size > MAX_SCHEMA_CHARS) {
+    log('warn', 'tool input schema too large; tool not exposed', { server: slug, tool: tool.name, size });
+    return null;
+  }
+  const schema = sanitizeInputSchema(tool.inputSchema);
+  if (containsInvisible(schema)) {
+    log('warn', 'invisible characters in a tool input schema; tool not exposed', { server: slug, tool: tool.name });
+    return null;
+  }
+  return schema;
 }

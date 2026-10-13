@@ -10,7 +10,7 @@ import { z } from 'zod';
 export interface FakeToolServer {
   /** e.g. http://127.0.0.1:54321/mcp */
   url: string;
-  /** Every tools/call the server received, in order. */
+  /** Every tools/call the server received, in order (a call the user declined never shows up here). */
   calls: Array<{ name: string; args: Record<string, unknown> }>;
   stop(): Promise<void>;
 }
@@ -20,6 +20,9 @@ export const BIG_REPORT_CHARS = 30_000;
 
 const text = (value: string): CallToolResult => ({ content: [{ type: 'text', text: value }] });
 
+/** The hints our own in-cluster servers put on read-only tools: the chat agent runs these without asking. */
+const READ_ONLY = { readOnlyHint: true, destructiveHint: false, openWorldHint: false } as const;
+
 function createFakeGateway(calls: FakeToolServer['calls']): McpServer {
   const server = new McpServer({ name: 'fake-gateway', version: '0.0.0' });
 
@@ -28,6 +31,7 @@ function createFakeGateway(calls: FakeToolServer['calls']): McpServer {
     {
       description: '[demo] Returns the current date and time in an IANA timezone such as Asia/Kolkata.',
       inputSchema: z.object({ timezone: z.string().max(64).describe('IANA timezone, e.g. Asia/Kolkata') }),
+      annotations: READ_ONLY,
     },
     async ({ timezone }) => {
       calls.push({ name: 'demo__get_time', args: { timezone } });
@@ -42,7 +46,7 @@ function createFakeGateway(calls: FakeToolServer['calls']): McpServer {
 
   server.registerTool(
     'demo__fail',
-    { description: '[demo] Always fails, like an upstream that timed out.', inputSchema: z.object({}) },
+    { description: '[demo] Always fails, like an upstream that timed out.', inputSchema: z.object({}), annotations: READ_ONLY },
     async () => {
       calls.push({ name: 'demo__fail', args: {} });
       return { ...text('demo: upstream timed out after 10s'), isError: true };
@@ -51,10 +55,24 @@ function createFakeGateway(calls: FakeToolServer['calls']): McpServer {
 
   server.registerTool(
     'demo__big_report',
-    { description: '[demo] Returns a very long report.', inputSchema: z.object({}) },
+    { description: '[demo] Returns a very long report.', inputSchema: z.object({}), annotations: READ_ONLY },
     async () => {
       calls.push({ name: 'demo__big_report', args: {} });
       return text('x'.repeat(BIG_REPORT_CHARS));
+    },
+  );
+
+  // An outbound tool, like mail__send_message: the chat agent must ask the user before running it.
+  server.registerTool(
+    'demo__send',
+    {
+      description: '[demo] Sends a message to someone outside the team.',
+      inputSchema: z.object({ to: z.string().max(200), text: z.string().max(2000) }),
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+    },
+    async ({ to, text: body }) => {
+      calls.push({ name: 'demo__send', args: { to, text: body } });
+      return text(`sent to ${to}`);
     },
   );
 

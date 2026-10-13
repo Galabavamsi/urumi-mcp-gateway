@@ -10,7 +10,16 @@ export interface ChatEventMap {
   tool_call: { id: string; name: string; args: unknown };
   /** How that tool call ended. `preview` is at most PREVIEW_CHARS characters; on failure it holds the error text. */
   tool_result: { id: string; name: string; ok: boolean; durationMs: number; preview: string };
-  /** The turn finished. `iterations` = model calls made; usage is summed over all of them. */
+  /**
+   * The turn paused: these tool calls (destructive or outbound tools, see chat/confirm.ts) wait for the user.
+   * The browser answers with POST /api/chat {confirm: {id, approve}} within 5 minutes; `done` follows at once
+   * with stopReason 'needs_confirmation'.
+   */
+  confirm_required: { id: string; calls: Array<{ id: string; name: string; args: unknown }> };
+  /**
+   * The turn finished (or paused). `iterations` = model calls made; usage is summed over all of them, across a
+   * pause too. stopReason: end_turn, needs_confirmation, max_tokens, refusal, max_iterations, ...
+   */
   done: { stopReason: string; iterations: number; usage: { inputTokens: number; outputTokens: number } };
   /** The turn failed; the stream ends right after this event. The message never contains secrets. */
   error: { message: string };

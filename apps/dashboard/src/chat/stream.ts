@@ -8,28 +8,33 @@ export interface ChatMessage {
   content: string;
 }
 
+/** Body of POST /api/chat: a new message with the transcript, or the answer to an approval request. */
+export type ChatRequestBody = { messages: ChatMessage[] } | { confirm: { id: string; approve: boolean } };
+
 export type ChatEvent =
   | { type: 'tools'; count: number; names: string[] }
   | { type: 'text'; text: string }
   | { type: 'tool_call'; id: string; name: string; args: unknown }
   | { type: 'tool_result'; id: string; name: string; ok: boolean; durationMs: number; preview: string }
+  | { type: 'confirm_required'; id: string; calls: Array<{ id: string; name: string; args: unknown }> }
   | { type: 'done'; stopReason: string; iterations: number; usage: { inputTokens: number; outputTokens: number } }
   | { type: 'error'; message: string };
 
-const KNOWN_EVENTS = new Set<ChatEvent['type']>(['tools', 'text', 'tool_call', 'tool_result', 'done', 'error']);
+const KNOWN_EVENTS = new Set<ChatEvent['type']>(['tools', 'text', 'tool_call', 'tool_result', 'confirm_required', 'done', 'error']);
 
 /**
- * POSTs the transcript and calls `onEvent` for every event, in order. Resolves when the stream ends.
+ * POSTs a new message (with the transcript) or an approval answer, and calls `onEvent` for every event, in order.
+ * Resolves when the stream ends.
  * Rejects with ApiError if the gateway refuses the request (validation, session, LLM not configured),
  * or with the abort error if `signal` fires (Stop button).
  */
 export async function streamChat(
-  messages: ChatMessage[],
+  body: ChatRequestBody,
   options: { signal: AbortSignal; onEvent: (event: ChatEvent) => void },
 ): Promise<void> {
   const response = await apiFetch('/api/chat', {
     method: 'POST',
-    body: { messages },
+    body,
     accept: 'text/event-stream',
     signal: options.signal,
   });

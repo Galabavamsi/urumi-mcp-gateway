@@ -1,6 +1,18 @@
 import type { LookupAddress } from 'node:dns';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { describe, expect, it } from 'vitest';
-import { UrlNotAllowedError, assertUrlAllowed, checkUrlShape, guardedLookup, isPublicAddress, type Resolver } from './ssrf.ts';
+import {
+  MAX_UPSTREAM_RESPONSE_BYTES,
+  UrlNotAllowedError,
+  assertUrlAllowed,
+  checkUrlShape,
+  createUpstreamFetch,
+  guardedLookup,
+  isPublicAddress,
+  type Resolver,
+} from './ssrf.ts';
+import { classifyUpstreamError } from '../upstreams/errors.ts';
 
 const ALLOWLIST = ['woo-mcp.store.svc.cluster.local', 'supplier-mcp.mcp-upstreams.svc.cluster.local'];
 
@@ -99,5 +111,29 @@ describe('guardedLookup (connect-time check, defeats DNS rebinding)', () => {
     const result = await lookup('no-such-host.invalid', false);
     expect(result.err).not.toBeNull();
     expect(result.err).not.toBeInstanceOf(UrlNotAllowedError);
+  });
+});
+
+describe('createUpstreamFetch response size cap', () => {
+  it('refuses to read a body over MAX_UPSTREAM_RESPONSE_BYTES, and the failure reads as "too large", not as a dead server', async () => {
+    // A local "upstream" that answers with 1 MB more than the cap.
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(Buffer.alloc(MAX_UPSTREAM_RESPONSE_BYTES + 1024 * 1024, 0x20));
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+    try {
+      const upstreamFetch = createUpstreamFetch(['127.0.0.1']);
+      const error = await upstreamFetch(`http://127.0.0.1:${port}/mcp`).then((res) => res.text()).then(
+        () => null,
+        (err: unknown) => err,
+      );
+      expect(error).not.toBeNull();
+      expect(classifyUpstreamError(error)).toEqual({ kind: 'protocol', reason: 'upstream response too large (over 4 MB)' });
+    } finally {
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+    }
   });
 });
