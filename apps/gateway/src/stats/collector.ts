@@ -103,9 +103,10 @@ export interface ServerStatsView {
 /**
  * Durations that measure the upstream: it answered (ok or error), or the caller waited the full timeout. A call that
  * failed fast because the server is unreachable, or that the gateway denied, takes a few ms and never reached the
- * server: counting it would only make the percentiles look better during an outage.
+ * server: counting it would only make the percentiles look better during an outage. The Prometheus latency
+ * histogram (ToolRouter) uses the same set, so the two never disagree.
  */
-const TIMED_STATUSES: ReadonlySet<CallStatus> = new Set(['ok', 'error', 'timeout']);
+export const TIMED_STATUSES: ReadonlySet<CallStatus> = new Set(['ok', 'error', 'timeout']);
 
 /** Counts and latencies of one period (one minute, or since start). */
 class Tally {

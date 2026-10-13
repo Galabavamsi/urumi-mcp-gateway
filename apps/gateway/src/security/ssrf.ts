@@ -7,7 +7,9 @@
 //      in the cluster is reachable.
 //   2. Every other URL must be https, and EVERY address its host resolves to must be public unicast. We ask
 //      ipaddr.js for the address's range and accept only 'unicast' (an allowlist: loopback, private, link-local,
-//      CGNAT, unique-local, multicast, NAT64, 6to4, IPv4-mapped forms and every reserved range are refused).
+//      CGNAT, unique-local, multicast, NAT64, 6to4 and every reserved range are refused). An IPv4-mapped IPv6
+//      address (::ffff:a.b.c.d) is judged by the IPv4 inside it, so a mapped private, loopback or metadata
+//      address is refused and a mapped public one is allowed.
 //   3. The check runs twice: when the URL is saved (clear 422 for the admin) and again at connect time inside the
 //      HTTP client, on the address actually dialled. The second check defeats DNS rebinding (a name that resolved
 //      to a public IP when saved and to 10.0.0.5 a minute later).

@@ -22,14 +22,16 @@ tags are git short SHAs of images that CI pushed to GHCR.
 
 ```bash
 helm upgrade --install <release> charts/<chart> -n <namespace> -f charts/<chart>/values-<local|prod>.yaml \
-  --set-string <tag key>=<sha> --wait --timeout 10m --rollback-on-failure
+  --set-string <tag key>=<sha> --wait --wait-for-jobs --timeout 10m --rollback-on-failure
 helm history <release> -n <namespace>
 helm rollback <release> <revision> -n <namespace> --wait
 ```
 
 - **Helm 4 flags.** `--rollback-on-failure` is Helm 4's name for the old `--atomic`, and `--wait` must be given
   explicitly. Together they make Helm wait until every Deployment and StatefulSet of the release is ready and,
-  if that does not happen within the timeout, roll the release back to the previous revision.
+  if that does not happen within the timeout, roll the release back to the previous revision. Helm 4's `--wait`
+  counts a Job as ready as soon as it has started, so `--wait-for-jobs` makes it wait for the Job to complete
+  (the backup-volume check is the only Job in the charts): a failed check then fails the upgrade.
 - **`--set-string` for tags**, never `--set`: a short SHA can be all digits, which `--set` turns into a number.
   The charts refuse to render an empty or `latest` tag.
 - **No `--reuse-values`.** The values files are the whole truth; a toggle set by hand for a demo (such as the
@@ -92,7 +94,7 @@ Unreachable for a few seconds.
 ```bash
 helm upgrade --install supplier-mcp charts/mcp-server -n mcp-upstreams \
   -f charts/mcp-server/values-local.yaml -f charts/mcp-server/instances/supplier.yaml \
-  --set-string image.tag=<sha> --wait --timeout 10m --rollback-on-failure
+  --set-string image.tag=<sha> --wait --wait-for-jobs --timeout 10m --rollback-on-failure
 helm rollback supplier-mcp <revision> -n mcp-upstreams --wait
 ```
 
@@ -105,8 +107,9 @@ puts the old image back on top of the migrated database. The MariaDB image also 
 version change (`MARIADB_AUTO_UPGRADE`). So:
 
 1. Back up the database: `bash scripts/backup/backup-now.sh store` (and the uploads if you care about media),
-   see [Backups](#backups-and-restore).
-2. Upgrade: `helm upgrade --install woo-store charts/woo-store -n store -f charts/woo-store/values-<env>.yaml --set-string wordpress.image.tag=<sha> --set-string wooMcp.image.tag=<sha> --wait --timeout 10m --rollback-on-failure`.
+   see [Backups](#backups-and-restore). In production `scripts/vps/deploy.sh` does this step itself whenever
+   the WordPress image changes, and prints the rollback and restore commands for that dump.
+2. Upgrade: `helm upgrade --install woo-store charts/woo-store -n store -f charts/woo-store/values-<env>.yaml --set-string wordpress.image.tag=<sha> --set-string wooMcp.image.tag=<sha> --wait --wait-for-jobs --timeout 10m --rollback-on-failure`.
 3. Check the storefront, `kubectl -n store logs deploy/wordpress -c bootstrap`, and `node scripts/e2e-store.mjs --quick`.
 4. If it misbehaves: `helm rollback woo-store <revision> -n store --wait` **first**, then
    `bash scripts/backup/restore-store.sh <the dump from step 1>`. In the other order the new image would
@@ -151,7 +154,8 @@ a backup CronJob that dumps its database onto a PVC of its own and keeps the new
 | `woo-store` | `mariadb-backup` (02:00) | `mariadb-dump --single-transaction --routines \| gzip` → `wordpress-<UTC time>.sql.gz` | `mariadb-backups` |
 | `platform` | `postgres-backup` (02:15) | `pg_dump -Fc` → `gateway-<UTC time>.dump` | `postgres-backups` |
 
-The dump runs in the database's own image as the app user (never root), is written under a hidden
+The dump runs in the database's own image as the app user (MariaDB: `wordpress`, not root; Postgres: `gateway`,
+which is the database superuser, see the [threat model](THREAT-MODEL.md#residual-risks)), is written under a hidden
 `.partial` name and renamed only after it is checked complete, and the PVC carries
 `helm.sh/resource-policy: keep`, so neither `helm uninstall` nor turning backups off deletes the dumps.
 Design, gotchas and test results: [scripts/backup/README.md](../scripts/backup/README.md).
@@ -171,7 +175,7 @@ On the VPS add `--context urumi-vps` and run them with `KUBECONFIG=~/.kube/urumi
 
 ```bash
 helm upgrade woo-store charts/woo-store -n store --reset-then-reuse-values --set backup.enabled=true \
-  --wait --timeout 10m --rollback-on-failure        # likewise platform charts/platform -n platform
+  --wait --wait-for-jobs --timeout 10m --rollback-on-failure   # likewise platform charts/platform -n platform
 ```
 
 The next `scripts/dev-up.sh` turns them off again (it uses only `values-local.yaml`); the PVC and its dumps
@@ -214,8 +218,8 @@ scraper (no Prometheus is installed today). Defined in `apps/gateway/src/metrics
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
 | `gateway_tool_calls_total` | counter | `server`, `tool` (exposed name), `status` | Every tool call, by audit status: `ok`, `error`, `timeout`, `unreachable`, `denied` (policy, disabled server or rate limit) |
-| `gateway_tool_call_duration_seconds` | histogram (0.05 to 30 s) | `server` | Duration of calls forwarded to an upstream (refused calls are not observed) |
-| `gateway_upstream_up` | gauge | `server` | 1 if the server answered its last health check, else 0 |
+| `gateway_tool_call_duration_seconds` | histogram (0.05 to 30 s) | `server` | Duration of calls that measure the upstream: `ok`, `error` and `timeout`. Refused calls and fail-fast `unreachable` ones (a few ms, no network) are not observed, as on the Observability page, so an outage does not make p95 look better |
+| `gateway_upstream_up` | gauge | `server` | 1 while the server's status is Connected, else 0. It follows the status, so a single timed-out or HTTP 500 check does not flip it (that takes two in a row; a connection failure flips it at once) |
 | `gateway_auth_rejections_total` | counter | `reason` | MCP requests answered 401: `missing`, `malformed`, `unknown_key`, `wrong_secret`, `revoked`, `user_disabled`; on the chat's internal listener `chat_token_invalid`, `chat_user_inactive` |
 
 Plus prom-client's default process metrics (CPU, resident memory, heap, event-loop lag). Label values come only
@@ -333,6 +337,8 @@ kubectl -n store logs deploy/wordpress -c bootstrap      # what the store bootst
 | Chat answers "a chat reply is already running for you" | One running reply per user | Wait for it or press Stop |
 | `helm upgrade` fails with "updates to statefulset spec ... are forbidden" | A `volumeClaimTemplates` field (size, StorageClass, labels) changed | See the [one-off step](#one-off-step-for-clusters-installed-before-chart-011); size and StorageClass need backup, reinstall, restore |
 | `dev-up.sh` says `the Docker daemon is not running` | Docker Engine in WSL is stopped | `sudo systemctl start docker` |
+| `dev-up.sh` says `no access to the Docker socket` | Your user was just added to the `docker` group, which applies only to new logins | WSL: `wsl --shutdown` from Windows once; Linux: log out and back in (or `newgrp docker`) |
+| `dev-up.sh` says `Helm 4 is required` | Helm 3 on the PATH; it has no `--rollback-on-failure` | Install Helm 4.3 (`scripts/setup-wsl-docker.sh` does) |
 | k3d cannot create the load balancer | Port 80 or 443 is taken on the host | Stop whatever listens there |
 | Changes do not show up after `dev-up.sh` | The images are tagged by commit; uncommitted changes add a `-dirty-<hash>` suffix, so a new edit gives a new tag | Check the image tag in `kubectl -n <ns> get pod -o yaml` |
 

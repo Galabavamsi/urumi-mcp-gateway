@@ -4,6 +4,7 @@
 # Settings, all overridable from the environment:
 #   VPS_HOST         public IP of the VPS (the Elastic IP that `provision-aws.sh up|status` prints)
 #   VPS_SSH_KEY      private key for ubuntu@VPS_HOST                    default ~/.ssh/urumi-vps.pem
+#   VPS_KNOWN_HOSTS  the VPS's pinned SSH host key (provision-aws.sh)  default <repo>/.vps/known_hosts
 #   TUNNEL_PORT      local end of the SSH tunnel to the kube API        default 16443
 #   KUBECONFIG_FILE  kubeconfig written by kubeconfig.sh                default ~/.kube/urumi-vps.yaml
 #   KUBE_CONTEXT     context every kubectl/helm call is pinned to       default urumi-vps
@@ -11,6 +12,9 @@
 
 VPS_SSH_USER=ubuntu
 VPS_SSH_KEY="${VPS_SSH_KEY:-$HOME/.ssh/urumi-vps.pem}"
+# Inside the repo (gitignored), so Git Bash, where provision-aws.sh writes it, and WSL, where ssh reads it,
+# see the same file. A host key is public, not a secret.
+VPS_KNOWN_HOSTS="${VPS_KNOWN_HOSTS:-$ROOT/.vps/known_hosts}"
 TUNNEL_PORT="${TUNNEL_PORT:-16443}"
 KUBECONFIG_FILE="${KUBECONFIG_FILE:-$HOME/.kube/urumi-vps.yaml}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-urumi-vps}"
@@ -23,14 +27,19 @@ die() { echo "error: $*" >&2; exit 1; }
 need() { local tool; for tool in "$@"; do command -v "$tool" >/dev/null || die "$tool not found"; done; }
 
 # --- SSH to the VPS ------------------------------------------------------------------------------
-# accept-new: the first connection records the host key in ~/.ssh/known_hosts, later ones must match it.
-# (After re-creating the instance behind the same Elastic IP, remove the old key: ssh-keygen -R <ip>.)
-SSH_OPTS=(-i "$VPS_SSH_KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new
+# The host key is pinned, never trusted on first use: provision-aws.sh reads it from the instance's console
+# output through the EC2 API and writes VPS_KNOWN_HOSTS. With StrictHostKeyChecking=yes ssh accepts only
+# that key, so someone on the network path cannot pose as the VPS, not even on the very first connection
+# (which is the one that would hand them the kubeconfig and, through deploy.sh, every Secret).
+# The quotes inside the value keep a repo path with spaces in one piece (ssh splits the value on spaces).
+SSH_OPTS=(-i "$VPS_SSH_KEY" -o IdentitiesOnly=yes
+          -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=\"$VPS_KNOWN_HOSTS\"" -o GlobalKnownHostsFile=/dev/null
           -o ServerAliveInterval=30 -o ServerAliveCountMax=3)
 
 require_vps_host() {
   [ -n "${VPS_HOST:-}" ] || die "set VPS_HOST to the VPS's Elastic IP (scripts/vps/provision-aws.sh status prints it)"
   [ -f "$VPS_SSH_KEY" ] || die "SSH key $VPS_SSH_KEY not found (set VPS_SSH_KEY)"
+  [ -f "$VPS_KNOWN_HOSTS" ] || die "no pinned host key in $VPS_KNOWN_HOSTS: run scripts/vps/provision-aws.sh status to pin it"
 }
 
 # The arguments are the remote command line (e.g. 'sudo cat /etc/rancher/k3s/k3s.yaml').

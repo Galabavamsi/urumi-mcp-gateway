@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Turns the fresh Ubuntu 24.04 EC2 instance into a one-node k3s cluster. Runs ON the VPS as the ubuntu
 # user (it calls sudo itself) and is safe to re-run. Started from your machine with:
-#   ssh -i ~/.ssh/urumi-vps.pem ubuntu@$VPS_HOST 'bash -s' < scripts/vps/bootstrap-k3s.sh
-# Optional settings go inside the quotes, e.g.  'NODE_NAME=urumi-vps bash -s':
+#   VPS_HOST=<elastic-ip> bash scripts/vps/bootstrap.sh
+# which sends this file over ssh with the host key provision-aws.sh pinned. Optional settings (environment,
+# passed on by bootstrap.sh):
 #   PUBLIC_IP   put on the API server certificate (default: the instance's public IP from EC2 metadata)
 #   NODE_NAME   Kubernetes node name (default urumi-vps)
 #
@@ -177,7 +178,7 @@ main() {
 
   public_ip="${PUBLIC_IP:-$(imds public-ipv4 || true)}"
   [[ "$public_ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] \
-    || die "could not find the public IP (got '$public_ip'); pass it: 'PUBLIC_IP=<elastic-ip> bash -s'"
+    || die "could not find the public IP (got '$public_ip'); pass it: PUBLIC_IP=<elastic-ip> bash scripts/vps/bootstrap.sh"
   echo "VPS $(hostname), public IP $public_ip, k3s $K3S_VERSION"
 
   harden_host

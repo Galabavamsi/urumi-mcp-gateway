@@ -11,7 +11,7 @@
 #
 # Run inside WSL Ubuntu (Docker, k3d, kubectl and helm live there), from anywhere in the repo:
 #   bash scripts/dev-up.sh
-# From Windows:  wsl.exe -d Ubuntu -- bash /mnt/d/job/urumi-assignment/scripts/dev-up.sh
+# From Windows:  wsl.exe -d Ubuntu -- bash /mnt/<drive>/<path-to-repo>/scripts/dev-up.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -21,7 +21,9 @@ CLUSTER=urumi
 CONTEXT="k3d-$CLUSTER"
 STORE_HOST=store.127-0-0-1.sslip.io
 APP_HOST=app.127-0-0-1.sslip.io
-HELM_FLAGS=(--wait --timeout 10m --rollback-on-failure)   # Helm 4 spelling of the old --atomic
+# --rollback-on-failure is Helm 4's spelling of the old --atomic. --wait-for-jobs: without it Helm 4's --wait
+# counts a Job as ready once it has started (the backup-volume check, when backups are on).
+HELM_FLAGS=(--wait --wait-for-jobs --timeout 10m --rollback-on-failure)
 
 step() { printf '\n==> %s\n' "$*"; }
 die() { echo "error: $*" >&2; exit 1; }
@@ -29,7 +31,20 @@ die() { echo "error: $*" >&2; exit 1; }
 for tool in docker k3d kubectl helm git curl; do
   command -v "$tool" >/dev/null || die "$tool not found (run scripts/setup-wsl-docker.sh first)"
 done
-docker info >/dev/null 2>&1 || die "the Docker daemon is not running (sudo systemctl start docker)"
+# Checked now, not at step 4: Helm 3 has no --rollback-on-failure and would fail only after the image builds.
+helm_version="$(helm version --template '{{.Version}}')"
+case $helm_version in
+  v4.*) ;;
+  *) die "Helm 4 is required (found $helm_version): these scripts use Helm 4's --rollback-on-failure" ;;
+esac
+if ! docker_out="$(docker info 2>&1)"; then
+  case $docker_out in
+    *'permission denied'*)
+      die "no access to the Docker socket: your user is not in the docker group yet (log out and back in;
+       on WSL run 'wsl --shutdown' from Windows once)" ;;
+    *) die "the Docker daemon is not running (sudo systemctl start docker)" ;;
+  esac
+fi
 
 # --- 1. Cluster ----------------------------------------------------------------------------------
 step "k3d cluster $CLUSTER"

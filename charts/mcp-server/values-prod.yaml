@@ -2,7 +2,7 @@
 # commit. The tag is set at deploy time, never here; scripts/vps/deploy.sh runs, in effect:
 #   helm upgrade --install supplier-mcp charts/mcp-server -n mcp-upstreams \
 #     -f charts/mcp-server/values-prod.yaml -f charts/mcp-server/instances/supplier.yaml \
-#     --set-string image.tag=<git-sha> --wait --timeout 15m --rollback-on-failure
+#     --set-string image.tag=<git-sha> --wait --wait-for-jobs --timeout 15m --rollback-on-failure
 image:
   registry: ghcr.io/galabavamsi
   tag: ""                   # required at deploy (--set-string image.tag=<git-sha>); the chart fails without it

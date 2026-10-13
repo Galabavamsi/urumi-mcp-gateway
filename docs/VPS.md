@@ -23,7 +23,7 @@ Every step below is a script in `scripts/vps/`. They are safe to re-run, and the
 |---|---|---|---|
 | 1. Create the machine | `provision-aws.sh up` | your machine (AWS CLI) | ~2 min |
 | 2. DNS record | Cloudflare dashboard | browser | ~1 min (+ propagation) |
-| 3. Install k3s | `bootstrap-k3s.sh` | on the VPS, over SSH | ~3 min |
+| 3. Install k3s | `bootstrap.sh` (sends `bootstrap-k3s.sh`) | on the VPS, over SSH | ~3 min |
 | 4. kubeconfig + tunnel | `kubeconfig.sh`, `tunnel.sh` | WSL | seconds |
 | 5. Cluster add-ons | `install-addons.sh` | WSL, through the tunnel | ~2 min |
 | 6. Images | CI pushes to GHCR | GitHub Actions | per push |
@@ -42,7 +42,10 @@ Every step below is a script in `scripts/vps/`. They are safe to re-run, and the
   - While the repository is private, the packages are private too. Then `deploy.sh` needs `GHCR_PULL_TOKEN`: a classic GitHub token with only `read:packages`.
   - The images hold no secrets, so making the packages public removes that step.
 - **`.env`** (gitignored) with the same keys as locally: `BOOTSTRAP_ADMIN_EMAIL`, `BOOTSTRAP_ADMIN_PASSWORD`, `ANTHROPIC_API_KEY`, `FIRECRAWL_API_KEY`, `AGENTMAIL_API_KEY`.
-  - A key that is missing or empty is reported as "not set (skipped)" and its Secret is left alone.
+  - A key that is missing or empty is reported as "not set (skipped)" and its Secret is left alone, with one
+    exception: `FIRECRAWL_API_KEY` and `AGENTMAIL_API_KEY` share Secret `gateway-upstream-seed`, which is applied
+    with only the keys that are set, so removing one of them from `.env` deletes it from that Secret. The gateway
+    then skips that seed at its next start; a server it registered earlier keeps its stored credential.
   - Optional extras for the VPS: `ACME_EMAIL` and `GHCR_PULL_TOKEN` (both listed in `.env.example`).
 
 ## Costs and saving credits
@@ -77,7 +80,16 @@ Everything is tagged `Project=urumi` and named `urumi-vps`. `up` creates:
 | Instance `urumi-vps` | t3.large; latest Ubuntu 24.04 amd64 AMI from Canonical's public SSM parameter; 40 GB encrypted gp3 root disk with `DeleteOnTermination=false`; IMDSv2 required with hop limit 1; termination protection; no IAM role | security notes below |
 | Elastic IP | associated with the instance | the address, and so the DNS record, survive stop/start and instance replacement |
 
-At the end it prints the IP, the SSH command and the DNS record to add.
+Then it pins the machine's **SSH host key**. cloud-init prints the host keys to the instance's console on the
+first boot; `up` reads that console through the EC2 API (`get-console-output`, read-only, over HTTPS with your
+AWS credentials) and writes the ed25519 key to `.vps/known_hosts` in the repo (gitignored; a public key, not a
+secret). Every ssh in `scripts/vps/` uses only that file with `StrictHostKeyChecking=yes`, so even the first
+connection refuses a machine that is not ours. Without it the first connection would trust whatever key
+answered, and someone on your network path at that moment could receive the kubeconfig and, through
+`deploy.sh`, every Secret. The key appears about a minute after the first boot; `up` waits up to 5 minutes, and
+`status` pins it later if needed.
+
+At the end it prints the IP, the next commands and the DNS record to add.
 
 - **Your IP changed** (new Wi-Fi, a new day): `bash scripts/vps/provision-aws.sh allow-my-ip` points the SSH rule at your current address.
 - **Overview at any time:** `bash scripts/vps/provision-aws.sh status` shows the state, the IP, the SSH rule vs your IP, and what public DNS answers.
@@ -94,8 +106,8 @@ In Cloudflare, zone `humanslop.in`, go to **DNS**, then **Add record**:
 This covers `store.urumi.humanslop.in` and `app.urumi.humanslop.in`; the apex site and the Google Workspace MX records are untouched.
 
 **Why DNS only, not the orange-cloud proxy:**
-- **Long streams.** Cloudflare's proxy cuts long-lived responses after about 100-125 s. MCP clients hold a `subscriptions/listen` stream open for the live tool list, and the chat streams over SSE, so both would be cut.
-- **Simpler TLS.** With grey cloud, Let's Encrypt's HTTP-01 check reaches our Traefik directly, and the certificate browsers see is the one on the VPS. Encryption is end to end, with no Cloudflare origin certificate or SSL mode to configure.
+- **End-to-end TLS.** With grey cloud, Let's Encrypt's HTTP-01 check reaches our Traefik directly, and the certificate browsers and MCP clients see is the one on the VPS. No Cloudflare origin certificate or SSL mode to configure, and no third party terminates TLS in the middle and sees API keys, cookies and tool results in clear.
+- **No proxy in the MCP path.** Nothing buffers, times out or inspects the MCP and SSE streams except our own Traefik, whose behaviour with long streams was tested (a 200 s listen stream on its defaults, [DESIGN.md](DESIGN.md#architecture-choices)).
 
 Check with `bash scripts/vps/provision-aws.sh status`. Both hosts must resolve to the Elastic IP before step 7, or Let's Encrypt cannot validate them.
 
@@ -103,10 +115,11 @@ Check with `bash scripts/vps/provision-aws.sh status`. Both hosts must resolve t
 
 ```bash
 export VPS_HOST=<elastic-ip>
-ssh -i ~/.ssh/urumi-vps.pem ubuntu@$VPS_HOST 'bash -s' < scripts/vps/bootstrap-k3s.sh
+bash scripts/vps/bootstrap.sh     # sends bootstrap-k3s.sh over ssh with the pinned host key
 ```
 
-The script runs as `ubuntu` and calls `sudo` itself. It is safe to re-run.
+`bootstrap-k3s.sh` runs on the VPS as `ubuntu` and calls `sudo` itself. It is safe to re-run. Its two optional
+settings, `PUBLIC_IP` and `NODE_NAME`, are passed on from your environment by `bootstrap.sh`.
 
 1. **Safe host hardening.**
    - Automatic **security** updates via unattended-upgrades, with no automatic reboot. After a kernel update, run `sudo reboot` when convenient; k3s and every pod come back on their own.
@@ -179,7 +192,7 @@ This was rehearsed end to end with Let's Encrypt's own test CA (Pebble), which v
 
 ## 6. Images from CI
 
-`.github/workflows/ci.yml` runs on every push and pull request: typecheck, unit and integration tests (against a Postgres
+`.github/workflows/ci.yml` runs on every push to `main`, every pull request and on manual dispatch: typecheck, unit and integration tests (against a Postgres
 service container), bundle builds, and `helm lint` + `helm template | kubeconform -strict` of every chart with local and prod
 values (`.github/scripts/check-charts.sh`). Only on a push to `main`, and only when those pass, it builds the five images for
 linux/amd64 and pushes them to `ghcr.io/galabavamsi/<name>:<first 7 hex digits of the commit>` (plus the full SHA; never `latest`).
@@ -199,11 +212,16 @@ linux/amd64 and pushes them to `ghcr.io/galabavamsi/<name>:<first 7 hex digits o
 
 ```bash
 bash scripts/vps/deploy.sh                                  # TAG = HEAD's first 7 hex digits
-TAG=1a2b3c4 bash scripts/vps/deploy.sh                      # a specific commit CI built
+TAG=1a2b3c4 bash scripts/vps/deploy.sh                      # a specific commit CI built (its charts/ must equal HEAD's)
 CLUSTER_ISSUER=letsencrypt-staging bash scripts/vps/deploy.sh   # first try with staging certificates
 GHCR_PULL_TOKEN=... bash scripts/vps/deploy.sh              # private packages (or put it in .env)
 ```
 
+0. **Charts and images from one commit:** the images are CI's build of commit `TAG`, the charts come from your
+   checkout. `deploy.sh` refuses uncommitted changes under `charts/` (they would ship under a clean commit's
+   tag; `ALLOW_DIRTY_CHARTS=1` for a test cluster), and a `TAG` whose `charts/` differ from HEAD's (old images
+   with new templates). To go back to an older release use `helm rollback`; to deploy an older commit, run
+   `deploy.sh` from a checkout of it (`git worktree add`).
 1. **Images:** checks that the five GHCR tags exist.
 2. **Secrets:** runs `scripts/secrets.sh` with a temporary kubeconfig that contains only the VPS context, so it cannot reach any other cluster.
    - Internal secrets are generated once and kept.
@@ -211,12 +229,20 @@ GHCR_PULL_TOKEN=... bash scripts/vps/deploy.sh              # private packages (
 3. **Pull secret (private packages only):** with `GHCR_PULL_TOKEN`, writes Secret `ghcr-pull` (type dockerconfigjson) into `store`, `platform` and `mcp-upstreams`.
    - The token never appears in a process list or in output.
    - A release gets `imagePullSecrets` whenever that Secret exists in its namespace.
-4. **Releases:** `helm upgrade --install` of `woo-store`, `supplier-mcp`, then `platform`.
+4. **Pre-upgrade dump of the store:** when `woo-store` is already installed and the new WordPress image tag
+   differs from the deployed one, `deploy.sh` runs `scripts/backup/backup-now.sh store` first and stops if the
+   dump fails. A new WordPress or WooCommerce version migrates the database on start, forward only, so this
+   dump is what undoing the upgrade needs; `deploy.sh` prints the exact `helm rollback` and
+   `restore-store.sh <dump>` commands at the end (and on failure). Tags are commit hashes, so almost every
+   deploy takes one; the dumps share the nightly CronJob's retention (newest 7), so `fetch.sh` the ones to keep.
+   `SKIP_STORE_BACKUP=1` skips it on a test cluster.
+5. **Releases:** `helm upgrade --install` of `woo-store`, `supplier-mcp`, then `platform`.
    - Each uses its chart's `values-prod.yaml` with `--set-string` image tags.
-   - Each runs with `--wait --timeout 15m --rollback-on-failure`.
+   - Each runs with `--wait --wait-for-jobs --timeout 15m --rollback-on-failure`. `--wait-for-jobs` makes a
+     failed backup-volume check fail the release (Helm 4's plain `--wait` counts a started Job as ready).
    - No `--reuse-values`: the files are the whole truth.
-5. **Certificates:** waits until both Certificates are Ready, which takes 30-90 s the first time.
-6. **Smoke test:** expects a 301 to https for `http://store…/checkout/`, 200 for `https://store…/shop/` and `https://app…/`, and 401 for `https://app…/api/auth/me`.
+6. **Certificates:** waits until both Certificates are Ready, which takes 30-90 s the first time.
+7. **Smoke test:** expects a 301 to https for `http://store…/checkout/`, 200 for `https://store…/shop/` and `https://app…/`, and 401 for `https://app…/api/auth/me`.
 
 `CLUSTER_ISSUER=letsencrypt-staging` switches both Ingresses to untrusted staging certificates, which have generous rate limits. A normal run afterwards switches back, and cert-manager re-issues. Let's Encrypt prod allows 5 failed validations per hostname per hour and 5 identical certificates per week.
 
@@ -260,16 +286,16 @@ On an https store, check `c6` of `e2e-store.mjs` signs its WooCommerce REST call
 
 | Task | How |
 |---|---|
-| Ship a new version | push, wait for CI, `bash scripts/vps/deploy.sh` |
+| Ship a new version | commit, push, wait for CI, `bash scripts/vps/deploy.sh` (it takes the pre-upgrade store dump itself) |
 | See releases | `helm --kubeconfig ~/.kube/urumi-vps.yaml --kube-context urumi-vps list -A` |
 | Roll back the gateway or an MCP server | `helm … history platform -n platform`, then `helm … rollback platform <revision> -n platform --wait` |
 | Back up now / copy off the VPS | `KUBECONFIG=~/.kube/urumi-vps.yaml bash scripts/backup/backup-now.sh all --context urumi-vps`, then `fetch.sh store` and `fetch.sh platform` with the same options |
-| Roll back the store | database migrations only go forward: back up before the upgrade; to undo it, `helm … rollback woo-store <revision>` first, then `scripts/backup/restore-store.sh <that dump>` (docs/OPERATIONS.md) |
+| Roll back the store | database migrations only go forward: `deploy.sh` dumps the store before a WordPress image change and prints the undo commands: `helm … rollback woo-store <revision>` first, then `scripts/backup/restore-store.sh <that dump>` (docs/OPERATIONS.md) |
 | Rotate an `.env` secret | edit `.env`, run `deploy.sh` (re-applies it), restart the gateway: `kubectl … -n platform rollout restart deploy/gateway` |
 | Your IP changed | `bash scripts/vps/provision-aws.sh allow-my-ip`, then restart `tunnel.sh` |
 | Pause to save credits | `provision-aws.sh stop`, and later `start` (same IP and data) |
-| Kernel update pending | `ssh … sudo reboot` (pods come back by themselves in ~2 min) |
-| Instance replaced, same IP | `ssh-keygen -R <elastic-ip>` (new host key), then steps 3-5 |
+| Kernel update pending | `ssh -i ~/.ssh/urumi-vps.pem -o UserKnownHostsFile=.vps/known_hosts ubuntu@$VPS_HOST sudo reboot` from the repo root (pods come back by themselves in ~2 min) |
+| Instance replaced, same IP | `provision-aws.sh up` (or `status`) pins the new instance's host key, then steps 3-5 |
 
 ## What changes vs local
 
@@ -341,6 +367,8 @@ This leaves headroom:
   - Key-only login; no passwords, no root login.
   - Only local port forwarding (`AllowTcpForwarding local`).
   - The ed25519 key is generated by AWS and written straight to a mode-600 file.
+  - The host key is pinned from the EC2 console output before the first connection (`.vps/known_hosts`,
+    `StrictHostKeyChecking=yes`), never trusted on first use.
 - **IMDSv2 only, hop limit 1, no IAM role.**
   - The instance metadata service answers only with a session token, which needs a PUT. With hop limit 1, the token reply cannot cross the extra network hop into a pod.
   - So a compromised pod (or an SSRF in the gateway) cannot read instance metadata, let alone credentials.
@@ -362,7 +390,10 @@ This leaves headroom:
 - **Patching:** unattended-upgrades installs security updates daily. Reboots are manual, so a demo is never interrupted.
 - **Supply chain:**
   - Every version is pinned: k3s, its installer (by SHA-256), cert-manager, images by git SHA.
-  - Images come only from GHCR (our CI), Docker Hub official images and quay.io/jetstack.
+  - The images our charts and add-ons deploy come only from GHCR (our CI), Docker Hub official images (MariaDB,
+    Postgres) and quay.io/jetstack (cert-manager).
+  - k3s pulls the images of its own add-ons (Traefik, CoreDNS, local-path-provisioner, metrics-server, ServiceLB)
+    from Docker Hub's `rancher/` namespace, at the versions pinned by the k3s release.
 
 ## Backups and restore
 
@@ -403,7 +434,8 @@ bash scripts/vps/provision-aws.sh down
 
 Afterwards:
 - Remove the Cloudflare `*.urumi` record.
-- Optionally remove `~/.ssh/urumi-vps.pem`, `~/.kube/urumi-vps.yaml` and the `known_hosts` entry (`ssh-keygen -R <ip>`).
+- Optionally remove `~/.ssh/urumi-vps.pem`, `~/.kube/urumi-vps.yaml` and `.vps/known_hosts` (a new instance is
+  pinned again by `up` anyway).
 
 ## Troubleshooting
 
@@ -412,7 +444,11 @@ Afterwards:
 | `deploy.sh`: certificate not Ready | DNS first (`provision-aws.sh status`). Then `kubectl -n store get certificaterequests,orders,challenges` and `kubectl -n store describe challenges`. If the reason mentions rate limits, switch to `CLUSTER_ISSUER=letsencrypt-staging` and wait. If cert-manager's self-check cannot reach the host from inside the cluster (`propagation check failed`) while the URL works from outside, the http01 solver's `waitInsteadOfSelfCheck` option in `cluster-issuers.yaml` skips the self-check |
 | Browser shows "TRAEFIK DEFAULT CERT" | normal for a few seconds right after issuance (`deploy.sh` waits for it); if it stays, `kubectl -n store get secret woo-store-tls` and the Traefik logs |
 | `tunnel.sh` keeps reconnecting | your IP changed (`provision-aws.sh allow-my-ip`) or the instance is stopped (`status`) |
-| `kubeconfig.sh` / ssh: host key changed | the instance was replaced: `ssh-keygen -R <elastic-ip>` |
+| ssh: `Host key verification failed` | the instance was replaced (new keys behind the same IP): `provision-aws.sh status` pins the new key. If the instance was **not** replaced, stop: something else answered on that address |
+| `no pinned host key in .vps/known_hosts` | run `provision-aws.sh status` (from where the AWS CLI works) to read the key from the console output |
+| `deploy.sh`: "charts/ has uncommitted changes" | commit them (CI then builds that commit and its images) and deploy that commit |
+| `deploy.sh`: "charts/ differ between <TAG> and HEAD" | you asked for older images with newer templates: `helm rollback` to an older revision, or deploy from a checkout of that commit |
+| `deploy.sh`: "the pre-upgrade dump failed" | nothing was upgraded. `kubectl -n store get jobs`, the job's log, and `scripts/backup/README.md`; `SKIP_STORE_BACKUP=1` only on a test cluster |
 | `deploy.sh`: "not in GHCR for tag …" | the commit was not pushed or CI is still running (`gh run list`), or the packages are private and `GHCR_PULL_TOKEN` is not set |
 | Pods stuck in `ImagePullBackOff` | private packages without `ghcr-pull`, or an expired token: set `GHCR_PULL_TOKEN` and deploy again |
 

@@ -46,7 +46,9 @@ spec:
 #    Helm 4's --wait counts an unbound PVC as not ready. The CronJob's first pod only comes at 02:00, so
 #    without this Job `helm upgrade --wait --rollback-on-failure` would time out and roll itself back.
 # 2. An early warning. It proves the backup user can write to the volume now, at deploy time, instead
-#    of the first nightly run failing at 02:00.
+#    of the first nightly run failing at 02:00. That blocks the deploy only because our scripts pass
+#    --wait-for-jobs: without it Helm 4's --wait counts a Job as ready once it has started, and a failed
+#    check would only leave a Failed Job behind.
 #
 # A Job's pod template cannot be changed after creation, so the name carries a hash of it: any change
 # (e.g. a new mariadb image) makes a new Job, and Helm deletes the old one.

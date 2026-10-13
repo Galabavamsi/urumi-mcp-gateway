@@ -4,13 +4,24 @@
 # C:\Users\<name>\AppData (Windows error 1920), so it crashes on start. Running the engine
 # inside WSL keeps every socket on the Linux filesystem and mirrors the k3s VPS setup.
 #
-# Usage (from an Ubuntu WSL terminal):  bash /mnt/d/job/urumi-assignment/scripts/setup-wsl-docker.sh
+# Usage (from an Ubuntu WSL terminal):  bash /mnt/<drive>/<path-to-repo>/scripts/setup-wsl-docker.sh
 set -euo pipefail
 
 K3D_VERSION="v5.9.0"
 HELM_VERSION="v4.3.0"
 KUBECTL_VERSION="v1.36.5"   # matches k3s v1.36.5 (local k3d image + VPS)
 ARCH="$(dpkg --print-architecture)"   # amd64
+
+# Docker Desktop's WSL integration links its own docker CLI and socket into this distro (symlinks into
+# /mnt/wsl/docker-desktop). A second engine on the same paths fights it, so stop before installing anything.
+# Plain readlink, not -f: when Docker Desktop is not running the links dangle, and -f would then fail.
+for link in /usr/bin/docker /var/run/docker.sock; do
+  if readlink "$link" 2>/dev/null | grep -q docker-desktop; then
+    echo "Docker Desktop's WSL integration is on for this distro ($link). Turn it off first:" >&2
+    echo "  Docker Desktop > Settings > Resources > WSL integration: untick this distro, then quit Docker Desktop." >&2
+    exit 1
+  fi
+done
 
 echo "==> Docker Engine (official apt repo)"
 sudo apt-get update -y
@@ -46,5 +57,6 @@ echo
 echo "Done. Versions:"
 docker --version; kubectl version --client | head -1; helm version --short; k3d version | head -1
 echo
-echo "NEXT: close this terminal and run 'wsl --shutdown' from Windows once, so the docker group applies."
-echo "      Keep Docker Desktop quit (or disable its WSL integration) so it doesn't fight this engine."
+echo "NEXT: so the docker group applies, close this terminal and run 'wsl --shutdown' from Windows once"
+echo "      (on plain Linux: log out and back in, or run 'newgrp docker')."
+echo "      Keep Docker Desktop quit (or its WSL integration off) so it doesn't fight this engine."

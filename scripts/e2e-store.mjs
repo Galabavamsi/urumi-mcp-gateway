@@ -701,7 +701,7 @@ async function main() {
     const before = [...(await pods('store', 'app.kubernetes.io/name=wordpress')), ...(await pods('store', 'app.kubernetes.io/name=mariadb'))];
     // --reuse-values = exactly the values of the running release. Runs in the repo root (WSL maps the cwd).
     await sh(['helm', 'upgrade', 'woo-store', 'charts/woo-store', '-n', 'store', '--reuse-values',
-      '--wait', '--timeout', '10m', '--rollback-on-failure'], { timeoutMs: 660_000 });
+      '--wait', '--wait-for-jobs', '--timeout', '10m', '--rollback-on-failure'], { timeoutMs: 660_000 });
     const revision = JSON.parse(await sh(['helm', 'status', 'woo-store', '-n', 'store', '-o', 'json'])).version;
     const after = [...(await pods('store', 'app.kubernetes.io/name=wordpress')), ...(await pods('store', 'app.kubernetes.io/name=mariadb'))];
     const same = JSON.stringify(before.map((p) => p.uid).sort()) === JSON.stringify(after.map((p) => p.uid).sort());

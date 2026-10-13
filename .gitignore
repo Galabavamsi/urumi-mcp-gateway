@@ -7,6 +7,8 @@
 kubeconfig*
 *.kubeconfig
 !scripts/vps/kubeconfig.sh
+# the VPS's pinned SSH host key (scripts/vps/provision-aws.sh); public, but specific to one machine
+.vps/
 
 # database dumps and uploads archives (scripts/backup/fetch.sh saves outside the repo; manual dumps
 # from docs/OPERATIONS.md land in the current directory). Migrations under apps/*/drizzle/ are code.

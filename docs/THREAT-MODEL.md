@@ -18,7 +18,7 @@ The model provider (Anthropic) is a data processor that receives the chat contex
 | Members' API keys `mgw_<id>_<secret>` | Only `HMAC-SHA256(pepper, key)` in Postgres; the full key is shown once | Pepper in a Secret; checked on every request, never cached (`auth/mcpAuth.ts`) |
 | Dashboard passwords and sessions | Postgres | scrypt (N=2^14, r=8, p=5); sessions stored as an HMAC of a 32-byte random token; HttpOnly cookie |
 | The gateway's own keys (pepper, credentials key, chat JWT key, session secret) | Secret `gateway-internal`, env vars of the gateway pod | Generated once by `scripts/secrets.sh`, never printed |
-| WooCommerce API key of `mcp-bot` | Secret `woo-store-api`; WooCommerce stores its hash | Only woo-mcp has it; role `urumi_mcp_bot` has 12 capabilities (products and orders only) |
+| WooCommerce API key of `mcp-bot` | Secret `woo-store-api`; in MariaDB (`wp_woocommerce_api_keys`, written by `configure-store.php` in WooCommerce's own format) the consumer key is stored only as `wc_api_hash(ck)`, but the consumer secret is stored in plain text, because it is the HMAC key WooCommerce checks OAuth 1.0a signatures with | Only woo-mcp has it; role `urumi_mcp_bot` has 12 capabilities (products and orders only) |
 | Store data, including customer names, emails, phone numbers, cities and order contents | MariaDB | Reachable only through WordPress; woo-mcp exposes billing name, email, phone and city but never street addresses |
 | Shared credits and reputation (Firecrawl credits, the AgentMail inbox, Anthropic spend) | Third parties | Allowlists, policies, rate limits, approval step, audit |
 | The audit log | Postgres | Written by the gateway only; members read only their own rows |
@@ -74,7 +74,7 @@ flowchart LR
 | **B1** Internet → Ingress | Shoppers' requests, dashboard traffic, MCP requests | Only the `store.` and `app.` hosts are routed, and on `app.` only `/api` and `/mcp` reach the gateway (its `/healthz`, `/readyz` and metrics port are never routed). In production, TLS and an HTTP-to-HTTPS redirect for everything (`cluster/traefik-prod.yaml`). |
 | **B2** Ingress → gateway authentication | Session cookies, API keys | `/api` needs a session (except login, logout and the invite-link pages), `X-Urumi-CSRF: 1` on every state-changing request, and the right role per route; `/mcp` accepts API keys only, never cookies; the chat's internal listener binds `127.0.0.1` and accepts only 5-minute chat JWTs. |
 | **B3** Gateway → upstream MCP servers | Tool calls out; tool definitions and results back | Each server gets only its own credential. URLs pass the SSRF guard; the gateway's egress NetworkPolicy allows the two in-cluster MCP Services and public IPs on port 443 only. Everything coming back is untrusted content (section 3). |
-| **B4** woo-mcp → WordPress | Signed REST calls | Bearer token on woo-mcp plus a NetworkPolicy that admits only gateway pods; OAuth 1.0a as `mcp-bot` with a minimal role. |
+| **B4** woo-mcp → WordPress | Signed REST calls | woo-mcp may only reach WordPress:8080, and WordPress admits only Traefik and woo-mcp (the woo-store NetworkPolicies); OAuth 1.0a as `mcp-bot` with a minimal role. |
 | **B5** Gateway → model provider | System prompt, conversation, tool definitions, tool results (which can contain customer data) | HTTPS; tool results capped at 20,000 characters per call. No redaction of personal data (residual). |
 | **B6** Shopper-typed text → the model's context | Order notes, billing names, product text | Not a network boundary but the most important content boundary: see section 4. |
 
@@ -113,19 +113,22 @@ A member can make the gateway **use** a credential, never **read** it:
 **Residual.** The upstream sees every call as "the team": attribution exists only in our audit log. The rate
 limits are per minute, with no daily budget, so a member can keep spending at 10 Firecrawl calls a minute. The
 audit log keeps a hash of the arguments, not the arguments, so it shows *that* a member scraped something, not
-*what*. And the gateway does not scan upstream responses for credentials: an upstream that echoed its own key
-in an error would show it to the member (that upstream holds the key already, so this exposes it to members,
-not to a new party).
+*what* (except when the call failed: the row keeps the error text, up to 300 characters from the upstream,
+which can repeat an argument such as a URL or an order ID). And the gateway does not scan upstream responses
+for credentials: an upstream that echoed its own key in an error would show it to the member (that upstream
+holds the key already, so this exposes it to members, not to a new party).
 
 ## 2. Why client tokens are never passed through to upstreams
 
 What reaches the gateway is a member's `mgw_` key (or, from the chat, a 5-minute JWT). What an upstream receives
 is the gateway's **own** credential for that server, the MCP protocol headers and the tool arguments; never the
 member's key, cookie or identity. This is structural, not a filter: `mcpRoutes` authenticates the
-`Authorization` header and passes only a principal (user id, role, key prefix) to the MCP handler
-(`mcp/mcpEndpoint.ts`); `ToolRouter.callTool` has no access to request headers; each upstream client is built
-once from the server row's URL, auth type and decrypted credential (`upstreams/upstreamClient.ts`). Redirects are
-refused, so not even the gateway's credential can be bounced to another host.
+`Authorization` header, then hands the request to the SDK's MCP handler with the principal (user id, role, key
+prefix) attached (`mcp/mcpEndpoint.ts`). Our two handlers (`tools/list`, `tools/call`) and
+`ToolRouter.callTool` receive only that principal plus the tool name, arguments and abort signal, never the
+request or its headers; each upstream client is built once from the server row's URL, auth type and decrypted
+credential (`upstreams/upstreamClient.ts`) and never sees the incoming request. Redirects are refused, so not
+even the gateway's credential can be bounced to another host.
 
 Why it must be this way:
 
@@ -199,7 +202,7 @@ and "Definition changed", and the gateway logs both.
 | See another member's activity | No | Members see only their own audit rows; a member's `userId` filter is ignored, never widened. Admins see all rows. |
 | Change servers, policies or roles | No | Admin-only routes. The last active admin cannot be demoted or disabled. |
 | **Inject instructions into another user's agent through store data** | Yes, partly mitigated | Anyone who can write store data can plant text that another user's agent later reads: a guest's order note or billing name (any anonymous shopper), a product name or description (whoever may create products: admins by default). woo-mcp removes invisible characters from and caps the order note (500 characters), the billing name (100) and product descriptions (HTML stripped, 1,000), and its schemas say these fields are data, never instructions. The chat's system prompt says the same. The approval step stops destructive and outbound tools (`update_order_status`, email, every Firecrawl tool) until a human clicks; `refunded` cannot be set at all. **Residual:** product names and the billing city are passed as WooCommerce stores them, and an injected instruction can still make the agent run tools that need no approval: reads, and for admins `create_product`, which shows in the audit log and on the storefront. |
-| Undo another member's work through shared write tools | Admins only, by default | WooCommerce sees every change as `mcp-bot`; there is no per-object ownership. Members are denied the store's write tools by default; the audit log shows which user changed something and when (not which order: arguments are hashed). |
+| Undo another member's work through shared write tools | Admins only, by default | WooCommerce sees every change as `mcp-bot`; there is no per-object ownership. Members are denied the store's write tools by default; the audit log shows which user changed something and when (usually not which order: arguments are hashed, and only a failed call's error text may name one). |
 | Drain shared credits | Bounded, not prevented | Per-user tool-call limits; the chat runs one reply per user, at most 8 model calls each. There is no daily budget per user. The audit log attributes tool calls, and the gateway log line `chat turn` records each user's token usage. |
 | Slow others down | Bounded | Rate limits are per user, so one member at the limit does not block others, but everyone shares one gateway pod, the upstreams' own rate limits and WordPress's 10 PHP workers. |
 | Lock another member out of the dashboard | Yes, for 15 minutes | The login throttle counts per email address, so five wrong passwords for someone's email block their login for 15 minutes. Their API keys keep working. An ingress rate limit per source address would be the fix. |
@@ -224,9 +227,10 @@ Kubernetes API. `apps/gateway/src/security/ssrf.ts`:
 - Only hosts listed in `INTERNAL_HOST_ALLOWLIST` (a Helm value, today woo-mcp and supplier-mcp) may be inside the
   cluster, and only they may use plain `http`.
 - Every other URL must be `https`, and **every** address its name resolves to must be ordinary public unicast
-  (ipaddr.js `range() === 'unicast'`: loopback, private, link-local, CGNAT, unique-local, multicast, NAT64, 6to4
-  and IPv4-mapped forms are refused). Decimal, octal and hex spellings of an IPv4 address are normalised by the
-  URL parser first, so they are caught too. Credentials inside the URL are refused.
+  (ipaddr.js `range() === 'unicast'`: loopback, private, link-local, CGNAT, unique-local, multicast, NAT64 and
+  6to4 are refused). An IPv4-mapped address (`::ffff:a.b.c.d`) is judged by the IPv4 inside it, so a mapped
+  private, loopback or metadata address is refused. Decimal, octal and hex spellings of an IPv4 address are
+  normalised by the URL parser first, so they are caught too. Credentials inside the URL are refused.
 - The check runs when the URL is saved (a clear 422) and again **at connect time** on the address actually
   dialled, which defeats DNS rebinding. Redirects are errors.
 - Underneath, the gateway's egress NetworkPolicy allows only the two MCP Services in the cluster and public IPs
@@ -246,9 +250,13 @@ Kubernetes API. `apps/gateway/src/security/ssrf.ts`:
   `scripts/vps/bootstrap-k3s.sh` turns on k3s secrets encryption (`secrets-encryption: true`; checked on a
   stand-in VPS: a Secret's value was not found in the datastore files, a ConfigMap's was), and the EBS volume is
   encrypted too (see [VPS.md](VPS.md#security-notes)).
-- Database dumps (`backup.enabled`, on in production) hold customer data and password hashes. They are written
-  with `umask 077` by the database's own uid onto a PVC that only backup pods mount; backup pods log in as the
-  app user, never root, and may reach only the database port. `scripts/backup/fetch.sh` saves copies outside the
+- Database dumps (`backup.enabled`, on in production) hold customer data, password hashes and the plain-text
+  consumer secret of the `mcp-bot` API key (the consumer key is only a hash there, so a dump alone cannot call
+  the REST API; rotate the key in Secret `woo-store-api` if a dump leaks). They are written with `umask 077` by
+  the database's own uid onto a PVC that only backup pods mount. MariaDB backup pods log in as the `wordpress`
+  app user, never root. Postgres has one role, `gateway`, created by the image's `POSTGRES_USER`, which makes it
+  the bootstrap superuser; the gateway, the backup pods and the restore pod all use it (residual risks below).
+  Backup pods may reach only the database port. `scripts/backup/fetch.sh` saves copies outside the
   repository with mode 0600, and `.gitignore` excludes `*.sql`, `*.sql.gz` and `*.dump`. A gateway dump holds
   only encrypted upstream credentials and key hashes: without the `gateway-internal` Secret (never in a dump) it
   cannot be used to call an upstream or to forge an API key.
@@ -323,5 +331,6 @@ the chat on real customer data means accepting the provider as a processor of th
 | Customer data sent to the model provider | Members' policies; caps | Redaction of personal fields before results reach the model |
 | No per-user identity at upstreams | Gateway audit | Per-user upstream credentials or token exchange |
 | Secrets not encrypted at rest in the local cluster | Local only; production enables k3s secrets encryption | — |
+| The gateway's Postgres role is the superuser (the official image's `POSTGRES_USER`); the backups use it too | Only gateway-identity and backup pods reach 5432; password required; the Postgres pod is uid 999 with a read-only root filesystem, all capabilities dropped, no egress beyond DNS and no service-account token; queries are parameterized (Drizzle) | An init script that creates a non-superuser owner role for the app (runs the migrations, owns the schema) and a read-only role (`pg_read_all_data`) for `pg_dump`; the superuser password only for operators and the restore |
 | Images pinned by tag, not digest; no scanning or signing | Pinned versions, checksums for downloaded code | Digests, image scanning and signing in CI |
 | In-memory limits and approvals (one replica) | Single replica by design | Shared state before scaling out ([DESIGN.md](DESIGN.md#scaling-limits)) |

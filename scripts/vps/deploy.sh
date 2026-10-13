@@ -1,16 +1,22 @@
 #!/usr/bin/env bash
 # Deploys (or upgrades) the whole stack on the VPS with the images CI pushed to GHCR:
+#   0. checks that charts/ is committed and is the same as in commit TAG (the images and the templates
+#      must come from one commit)
 #   1. checks that ghcr.io/galabavamsi/{wordpress,woo-mcp,supplier-mcp,gateway,dashboard}:<TAG> exist
 #   2. namespaces + Secrets (scripts/secrets.sh, aimed at the VPS only; existing Secrets are kept)
 #   3. optional: the ghcr-pull Secret, only while the GHCR packages are private (GHCR_PULL_TOKEN)
-#   4. helm upgrade --install woo-store, supplier-mcp, platform with the charts' values-prod.yaml
+#   4. a dump of the store database when the WordPress image changes (backup-now.sh), then
+#      helm upgrade --install woo-store, supplier-mcp, platform with the charts' values-prod.yaml
 #   5. waits for the TLS certificates, then smoke-tests the public URLs over HTTPS
 #
 # Usage (WSL, repo root, tunnel running, install-addons.sh done once):
 #   bash scripts/vps/deploy.sh                    TAG = the current commit (first 7 hex digits)
-#   TAG=1a2b3c4 bash scripts/vps/deploy.sh        a specific commit that CI built
+#   TAG=1a2b3c4 bash scripts/vps/deploy.sh        a specific commit that CI built (refused if its charts/
+#                                                 differ from HEAD's: check that commit out instead)
 # Settings (environment):
 #   TAG              image tag = git commit CI built the images from (default: HEAD, 7 characters)
+#   ALLOW_DIRTY_CHARTS=1  deploy uncommitted chart edits anyway (a test cluster only)
+#   SKIP_STORE_BACKUP=1   no pre-upgrade dump of the store (a test cluster only)
 #   GHCR_PULL_TOKEN  (environment or .env) a GitHub token (classic) with only read:packages, needed only
 #                    while the packages are private: stored as Secret ghcr-pull in store, platform and
 #                    mcp-upstreams (never printed), and the charts get imagePullSecrets.
@@ -31,7 +37,9 @@ REGISTRY=ghcr.io/galabavamsi
 IMAGES=(wordpress woo-mcp supplier-mcp gateway dashboard)
 GHCR_PULL_TOKEN="${GHCR_PULL_TOKEN:-$(env_get GHCR_PULL_TOKEN)}"
 GHCR_PULL_USER="${GHCR_PULL_USER:-galabavamsi}"
-HELM_FLAGS=(--wait --timeout 15m --rollback-on-failure)   # Helm 4 spelling of the old --atomic
+# --rollback-on-failure is Helm 4's spelling of the old --atomic. --wait-for-jobs: without it Helm 4's --wait
+# counts a Job as ready once it has started, so a failed backup-volume check would not fail the release.
+HELM_FLAGS=(--wait --wait-for-jobs --timeout 15m --rollback-on-failure)
 NAMESPACES=(store platform mcp-upstreams)
 
 need kubectl helm curl git
@@ -43,6 +51,27 @@ if [ -z "${TAG:-}" ]; then
   TAG="${TAG:0:7}"
 fi
 [[ "$TAG" =~ ^[0-9a-f]{7,40}$ ]] || die "TAG '$TAG' is not a git commit hash"
+
+# --- 0. Charts and images from one commit --------------------------------------------------------
+# The images are CI's build of commit TAG, but Helm renders the charts from this checkout. If the two differ,
+# production runs templates that no commit describes: uncommitted chart edits would ship under a clean
+# commit's tag, and TAG=<older commit> would run that commit's images with HEAD's templates (env vars, Secret
+# keys or seed servers the old code does not know). install-addons.sh, not this script, applies cluster/.
+step "charts/ match commit $TAG"
+if [ -n "$(git status --porcelain -- charts)" ] && [ "${ALLOW_DIRTY_CHARTS:-0}" != 1 ]; then
+  die "charts/ has uncommitted changes. Commit them (CI then builds that commit), or set ALLOW_DIRTY_CHARTS=1
+       on a test cluster"
+fi
+tag_commit="$(git rev-parse --verify --quiet "${TAG}^{commit}")" || die "commit $TAG is not in this clone (git fetch)"
+if [ "$tag_commit" = "$(git rev-parse HEAD)" ]; then
+  echo "  ok: TAG is HEAD"
+elif git diff --quiet "$tag_commit" HEAD -- charts; then
+  echo "  ok: charts/ are the same in $TAG and HEAD"
+else
+  die "charts/ differ between $TAG and HEAD, so images $TAG would run with HEAD's templates.
+       To go back to an older release use helm rollback (docs/VPS.md); to deploy commit $TAG, run this
+       script from a checkout of it (git worktree add ../urumi-$TAG $TAG)."
+fi
 
 # --- 1. Images exist in GHCR ---------------------------------------------------------------------
 # GHCR is an OCI registry: ask its token service for a pull token for one repository (anonymous for
@@ -83,9 +112,7 @@ step "namespaces and Secrets (scripts/secrets.sh)"
 # secrets.sh acts on "the current context". It gets a kubeconfig that holds only the VPS context, so it
 # cannot reach any other cluster, whatever your main kubeconfig has selected.
 with_vps_kubeconfig bash scripts/secrets.sh | sed 's/^/  /' \
-  || die "scripts/secrets.sh failed. If it stopped without a message: every key it reads must be present
-       in .env (an empty value is fine): BOOTSTRAP_ADMIN_EMAIL, BOOTSTRAP_ADMIN_PASSWORD, ANTHROPIC_API_KEY,
-       FIRECRAWL_API_KEY, AGENTMAIL_API_KEY"
+  || die "scripts/secrets.sh failed (its last lines above say where)"
 
 # --- 3. GHCR pull Secret (private packages only) -------------------------------------------------
 # The registry login in the format the kubelet reads (what `docker login` writes to config.json). Built with
@@ -132,15 +159,55 @@ fi
 
 release_status() { helm_vps status "$1" -n "$2" | sed -n 's/^\(REVISION\|STATUS\):/  \1:/p'; }
 
+# A new WordPress image migrates the store database the moment its pod starts (the bootstrap runs
+# `wp core update-db` and `wp wc update`), and those migrations only go forward. helm rollback, and
+# --rollback-on-failure, put back the old image, never the old schema. So before an upgrade that changes the
+# WordPress image, take a dump: it is what undoing the upgrade needs (docs/OPERATIONS.md, "The store").
+# Tags are commit hashes, so almost every deploy takes one. backup-now.sh runs the nightly CronJob's own Job,
+# with its retention (newest 7 dumps), so many deploys in one day push older dumps out: fetch.sh copies
+# the ones you want to keep.
+step "pre-upgrade dump of the store database"
+store_rev="$(helm_vps status woo-store -n store 2>/dev/null | sed -n 's/^REVISION: //p' || true)"
+store_dump=""
+deployed_wp="$(kube -n store get deploy wordpress -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)"
+if [ -z "$store_rev" ]; then
+  echo "  first install: no store database yet, nothing to back up"
+elif [ "${deployed_wp##*:}" = "$TAG" ]; then
+  echo "  the WordPress image stays $deployed_wp: nothing migrates, no dump needed"
+elif [ "${SKIP_STORE_BACKUP:-0}" = 1 ]; then
+  echo "  skipped (SKIP_STORE_BACKUP=1): this upgrade cannot be undone with a restore"
+elif ! kube -n store get cronjob mariadb-backup >/dev/null 2>&1; then
+  echo "  WARNING: backups are off in release woo-store (no CronJob mariadb-backup), so there is no dump"
+  echo "  to undo this upgrade with; values-prod.yaml turns them on, and this run will."
+else
+  # backup-now.sh acts on "the context it is given"; the temporary kubeconfig holds only the VPS.
+  backup_log="$(with_vps_kubeconfig bash scripts/backup/backup-now.sh store --context "$KUBE_CONTEXT" 2>&1)" \
+    || { printf '%s\n' "$backup_log" | sed 's/^/  /'; die "the pre-upgrade dump failed, so the store was not upgraded"; }
+  printf '%s\n' "$backup_log" | sed 's/^/  /'
+  store_dump="$(printf '%s\n' "$backup_log" | sed -n 's/^ *done: //p' | tail -n 1)"
+fi
+# How to undo this store upgrade, printed if it fails and in the summary.
+store_undo=""
+if [ -n "$store_dump" ]; then
+  store_undo="helm --kubeconfig $KUBECONFIG_FILE --kube-context $KUBE_CONTEXT rollback woo-store $store_rev -n store --wait
+            KUBECONFIG=$KUBECONFIG_FILE bash scripts/backup/restore-store.sh $store_dump --context $KUBE_CONTEXT"
+fi
+
 # No --reuse-values: the values files plus these flags are the whole truth, so a demo toggle set by hand
 # earlier (e.g. supplier DEMO_SLOW_TOOL) is reset here, exactly as dev-up.sh does locally.
 # --set-string for tags: a short SHA can be all digits, which --set would turn into a number.
 step "helm: woo-store (namespace store)"
 mapfile -t pull_args < <(pull_secret_args store)
-helm_vps upgrade --install woo-store charts/woo-store -n store \
-  -f charts/woo-store/values-prod.yaml \
-  --set-string wordpress.image.tag="$TAG" --set-string wooMcp.image.tag="$TAG" \
-  "${store_args[@]}" "${pull_args[@]}" "${HELM_FLAGS[@]}" >/dev/null
+if ! helm_vps upgrade --install woo-store charts/woo-store -n store \
+       -f charts/woo-store/values-prod.yaml \
+       --set-string wordpress.image.tag="$TAG" --set-string wooMcp.image.tag="$TAG" \
+       "${store_args[@]}" "${pull_args[@]}" "${HELM_FLAGS[@]}" >/dev/null; then
+  # --rollback-on-failure has already put the old release back. If the new image got as far as its
+  # bootstrap, the old code now runs on a migrated database: restore the dump (the rollback is done).
+  [ -z "$store_undo" ] || echo "  if the new WordPress image migrated the database (kubectl -n store logs deploy/wordpress -c bootstrap),
+  restore the pre-upgrade dump: KUBECONFIG=$KUBECONFIG_FILE bash scripts/backup/restore-store.sh $store_dump --context $KUBE_CONTEXT" >&2
+  die "helm upgrade of woo-store failed; Helm rolled the release back"
+fi
 release_status woo-store store
 
 step "helm: supplier-mcp (namespace mcp-upstreams)"
@@ -229,3 +296,9 @@ Releases:   helm --kubeconfig $KUBECONFIG_FILE --kube-context $KUBE_CONTEXT list
 Roll back:  helm ... rollback <release> <revision> -n <namespace>   (docs/VPS.md)
 End-to-end checks against this deployment: docs/VPS.md "Verify"
 EOF
+if [ -n "$store_undo" ]; then
+  cat <<EOF
+Undo this store upgrade (the WordPress image changed; rollback first, then the restore):
+            $store_undo
+EOF
+fi

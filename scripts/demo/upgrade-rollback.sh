@@ -39,7 +39,9 @@ CONTEXT="${KUBE_CONTEXT:-k3d-urumi}"
 APP_URL=http://app.127-0-0-1.sslip.io
 ALLOW_REMOTE=0 SKIP_STORE=0 PAUSE=0
 BAD_TAG=0.0.0-does-not-exist     # passes the chart's tag check (not empty, not "latest"); no such image
-HELM_WAIT=(--wait --rollback-on-failure --hide-notes)
+# --wait-for-jobs: without it Helm 4's --wait counts a Job (the backup-volume check of step f) as ready
+# once it has started.
+HELM_WAIT=(--wait --wait-for-jobs --rollback-on-failure --hide-notes)
 
 die() { echo "error: $*" >&2; exit 1; }
 usage() { sed -n '2,/^[^#]/s/^# \{0,1\}//p' "$0"; }
@@ -63,6 +65,11 @@ case $CONTEXT in
   *) [ "$ALLOW_REMOTE" = 1 ] || die "refusing to run against context '$CONTEXT' (not k3d-*): step c deploys a broken release on purpose. Pass --allow-remote (and --app-url) if you mean it." ;;
 esac
 for tool in kubectl helm curl; do command -v "$tool" >/dev/null || die "$tool not found"; done
+helm_version="$(command helm version --template '{{.Version}}')"
+case $helm_version in
+  v4.*) ;;
+  *) die "Helm 4 is required (found $helm_version): this demo uses Helm 4's --rollback-on-failure" ;;
+esac
 command kubectl config get-contexts "$CONTEXT" >/dev/null 2>&1 || die "no kube context '$CONTEXT'"
 
 # Every kubectl and helm call below is pinned to $CONTEXT by these two wrappers, so the demo never acts on

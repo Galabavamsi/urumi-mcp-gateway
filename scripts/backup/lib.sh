@@ -1,4 +1,5 @@
 # Shared by scripts/backup/*.sh (sourced, never run on its own).
+# shellcheck shell=bash
 #
 # Each script works on one "target":
 #   store     namespace store,    CronJob mariadb-backup   (charts/woo-store with backup.enabled=true)
@@ -52,7 +53,7 @@ use_target() {
     || die "no kube context '$CONTEXT' (pass --context, or set KUBE_CONTEXT)"
   k get cronjob "$CRONJOB" >/dev/null 2>&1 \
     || die "no CronJob $CRONJOB in namespace $NS (context $CONTEXT): backups are off for this release; turn them on with
-       helm upgrade <release> <chart> -n $NS --reset-then-reuse-values --set backup.enabled=true --wait"
+       helm upgrade <release> <chart> -n $NS --reset-then-reuse-values --set backup.enabled=true --wait --wait-for-jobs"
   RELEASE=$(cj '.metadata.labels.app\.kubernetes\.io/instance')
   DB_NAME=$(cj ".spec.containers[0].env[?(@.name==\"$DB_VAR\")].value")
   PVC=$(cj '.spec.volumes[?(@.name=="backups")].persistentVolumeClaim.claimName')

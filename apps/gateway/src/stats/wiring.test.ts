@@ -36,9 +36,16 @@ describe('ToolRouter feeds the StatsCollector', () => {
     } as unknown as UpstreamManager;
     const audit = { begin: async () => 1, complete: async () => {}, record: async () => {} } as unknown as AuditLog;
     const stats = new StatsCollector();
-    const router = new ToolRouter({ manager, audit, metrics: new GatewayMetrics(), defaultTimeoutMs: 1000, stats });
+    const metrics = new GatewayMetrics();
+    const router = new ToolRouter({ manager, audit, metrics, defaultTimeoutMs: 1000, stats });
     router.rebuildCatalog();
-    return { router, stats };
+    return { router, stats, metrics };
+  }
+
+  /** How many durations the Prometheus histogram observed for woo. */
+  async function timedCalls(metrics: GatewayMetrics): Promise<number> {
+    const { values } = await metrics.toolCallDuration.get();
+    return values.find((v) => v.metricName === 'gateway_tool_call_duration_seconds_count' && v.labels.server === 'woo')?.value ?? 0;
   }
 
   it('records an ok call under the server slug and the tool name on that server', async () => {
@@ -64,6 +71,17 @@ describe('ToolRouter feeds the StatsCollector', () => {
     await router.callTool(member, 'woo__get_order', {});
     expect(stats.view('woo').window.errors.unreachable).toBe(1);
     expect(stats.view('woo').lastError).toMatchObject({ status: 'unreachable', message: 'connection refused' });
+  });
+
+  it('times the same calls in the Prometheus histogram: an answered call, not a fail-fast unreachable one', async () => {
+    const answered = setup({ ok: true, result: { content: [{ type: 'text', text: 'order 7' }] } });
+    await answered.router.callTool(member, 'woo__get_order', { id: 7 });
+    expect(await timedCalls(answered.metrics)).toBe(1);
+
+    const down = setup({ ok: false, status: 'unreachable', reason: 'connection refused' });
+    await down.router.callTool(member, 'woo__get_order', {});
+    expect(await timedCalls(down.metrics)).toBe(0);
+    expect(down.stats.view('woo').window.calls).toBe(1); // still counted, just not timed
   });
 
   it('records a call refused by a policy as denied', async () => {

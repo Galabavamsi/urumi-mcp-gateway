@@ -9,7 +9,7 @@ import { errorForLog } from '../db/errors.ts';
 import type { GatewayMetrics } from '../metrics.ts';
 import { isToolDenied, type ToolPolicy } from '../policies/policy.ts';
 import { ToolRateLimiter } from '../policies/rateLimit.ts';
-import { TOOL_REPORTED_ERROR, type CallStatus, type StatsCollector } from '../stats/collector.ts';
+import { TIMED_STATUSES, TOOL_REPORTED_ERROR, type CallStatus, type StatsCollector } from '../stats/collector.ts';
 import type { Principal } from '../types.ts';
 import { shortMessage } from '../upstreams/errors.ts';
 import type { UpstreamManager } from '../upstreams/manager.ts';
@@ -149,7 +149,10 @@ export class ToolRouter {
     } finally {
       const durationMs = Math.round(performance.now() - started);
       this.deps.metrics.toolCalls.inc({ server: entry.serverSlug, tool: exposedName, status });
-      this.deps.metrics.toolCallDuration.observe({ server: entry.serverSlug }, durationMs / 1000);
+      // Only durations that measure the upstream (not fail-fast 'unreachable'), as on the Observability page.
+      if (TIMED_STATUSES.has(status)) {
+        this.deps.metrics.toolCallDuration.observe({ server: entry.serverSlug }, durationMs / 1000);
+      }
       // The tool's own error text stays in the audit log: it can repeat the caller's arguments.
       const reason = toolReportedError ? TOOL_REPORTED_ERROR : error;
       this.deps.stats?.recordCall({ server: entry.serverSlug, tool: entry.originalName, status, durationMs, error: reason });

@@ -1,7 +1,7 @@
 # Production: k3s on the EC2 VPS (docs/VPS.md). scripts/vps/deploy.sh runs, in effect:
 #   helm upgrade --install woo-store charts/woo-store -n store -f charts/woo-store/values-prod.yaml \
 #     --set-string wordpress.image.tag=<sha> --set-string wooMcp.image.tag=<sha> \
-#     --wait --timeout 15m --rollback-on-failure
+#     --wait --wait-for-jobs --timeout 15m --rollback-on-failure
 # Images come from GHCR tagged with the git commit CI built them from, so the tags are set at deploy
 # time (the templates refuse to render without them).
 #

@@ -1,6 +1,6 @@
 # Local k3d cluster (inside WSL). Images are loaded with `k3d image import <img>:dev -c urumi`.
 #   helm upgrade --install woo-store charts/woo-store -n store -f charts/woo-store/values-local.yaml \
-#     --wait --timeout 10m --rollback-on-failure
+#     --wait --wait-for-jobs --timeout 10m --rollback-on-failure
 
 ingress:
   host: store.127-0-0-1.sslip.io   # resolves to 127.0.0.1, where k3d maps Traefik's port 80

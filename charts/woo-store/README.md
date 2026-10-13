@@ -13,7 +13,7 @@ release in a second namespace.
 | `<release>-*` | NetworkPolicy ×6 (×8 with backups) | Default deny, then one allow per path (below). |
 | `mariadb-backup` | CronJob (02:00 IST), only if `backup.enabled` | Nightly `mariadb-dump --single-transaction \| gzip` as the app user into the PVC below, keeping the newest `backup.keep` (7). Same image as MariaDB, uid 999, read-only root filesystem, requests/limits, `activeDeadlineSeconds`. |
 | `mariadb-backups` | PVC (RWO), only if `backup.enabled` | The dumps. `helm.sh/resource-policy: keep`: survives `helm uninstall` and `backup.enabled=false`. |
-| `mariadb-backup-volume-<hash>` | Job, only if `backup.enabled` | Mounts the backup PVC at deploy time, so local-path binds it before Helm's `--wait` gives up, and proves it is writable. |
+| `mariadb-backup-volume-<hash>` | Job, only if `backup.enabled` | Mounts the backup PVC at deploy time, so local-path binds it before Helm's `--wait` gives up, and proves it is writable. A failed check fails the deploy only with `--wait-for-jobs` (our scripts pass it): plain Helm 4 `--wait` counts a started Job as ready. |
 
 The chart never creates Secrets or namespaces. `scripts/secrets.sh` creates both (names in
 `docs/CONTRACTS.md`), and the chart refers to the Secrets by name (`secrets.*` values).
@@ -25,12 +25,12 @@ The chart never creates Secrets or namespaces. `scripts/secrets.sh` creates both
 docker build -t urumi/wordpress:dev images/wordpress
 k3d image import urumi/wordpress:dev -c urumi
 helm upgrade --install woo-store charts/woo-store -n store -f charts/woo-store/values-local.yaml \
-  --wait --timeout 10m --rollback-on-failure
+  --wait --wait-for-jobs --timeout 10m --rollback-on-failure
 
 # production (k3s on the VPS): images from GHCR, tagged with the git SHA
 helm upgrade --install woo-store charts/woo-store -n store -f charts/woo-store/values-prod.yaml \
   --set-string wordpress.image.tag=$SHA --set-string wooMcp.image.tag=$SHA \
-  --wait --timeout 10m --rollback-on-failure
+  --wait --wait-for-jobs --timeout 15m --rollback-on-failure
 ```
 
 `values.yaml` holds the defaults. The environment files override only what differs:

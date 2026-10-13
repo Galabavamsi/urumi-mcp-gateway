@@ -14,12 +14,12 @@ A `POST` that creates something (invite, invite accept, key, server) answers **2
 ## Auth & invites
 | Method & path | Who | Body → Response |
 |---|---|---|
-| `POST /api/auth/login` | anyone | `{email, password}` → `{user}` + cookie; 401 `invalid_credentials`; 429 `too_many_attempts` after 5 attempts for one email in 15 min that did not log in (counted when they start, so parallel requests cannot bypass it) |
+| `POST /api/auth/login` | anyone | `{email, password}` → `{user}` + cookie; 401 `invalid_credentials`; 403 `account_disabled` (right password, disabled user); 429 `too_many_attempts` after 5 attempts for one email in 15 min that did not log in (counted when they start, so parallel requests cannot bypass it) |
 | `POST /api/auth/logout` | user | → 204 |
 | `GET /api/auth/me` | user | → `{user}` or 401 |
 | `GET /api/invites/:token` | anyone | → `{email, role, expiresAt}`; 404 if unknown/used/expired |
-| `POST /api/invites/:token/accept` | anyone | `{name, password}` (password ≥ 10 chars) → `{user}` + cookie |
-| `POST /api/invites` | admin | `{email, role}` → `{id, email, role, inviteUrl, expiresAt}` (link shown to the admin to share; valid 72 h, single use) |
+| `POST /api/invites/:token/accept` | anyone | `{name, password}` (password ≥ 10 chars) → `{user}` + cookie; 404 `invite_not_found`; 409 `email_taken` if a user with that email exists by now |
+| `POST /api/invites` | admin | `{email, role}` → `{id, email, role, inviteUrl, expiresAt}` (link shown to the admin to share; valid 72 h, single use); 409 `email_taken` if a user (active or disabled) has that email |
 | `GET /api/invites` | admin | → pending invites `[{id, email, role, createdAt, expiresAt}]` |
 | `DELETE /api/invites/:id` | admin | → 204 |
 
@@ -34,7 +34,7 @@ A `POST` that creates something (invite, invite accept, key, server) answers **2
 | Method & path | Who | Body → Response |
 |---|---|---|
 | `GET /api/keys` | user | own keys; admin may pass `?userId=<id>` or `?userId=all` → `[{id, name, prefix, userId, userEmail, createdAt, lastUsedAt, revokedAt}]` (`prefix` = `mgw_<keyId>_…`) |
-| `POST /api/keys` | user | `{name, userId?}` (`userId` admin-only, to issue for a member) → `{key: "mgw_…"(full, shown once), …keyFields}` |
+| `POST /api/keys` | user | `{name, userId?}` (`userId` admin-only, to issue for a member) → `{key: "mgw_…"(full, shown once), …keyFields}`; 403 `forbidden` when a member names another user; 404 for an unknown user; 409 `user_disabled` |
 | `DELETE /api/keys/:id` | owner or admin | revoke → 204 (immediate: the next MCP request with it gets 401) |
 
 ## Upstream servers
@@ -47,8 +47,8 @@ Credentials are **write-only**: never returned, only `hasCredential`.
 | Method & path | Who | Body → Response |
 |---|---|---|
 | `GET /api/servers` | user | → `[server]` (members see the same list; `allowedForMe` reflects policies) |
-| `POST /api/servers` | admin | `{slug, name, url, authType, headerName?, credential?, timeoutMs?, toolAllowlist?}` → `server`; 422 `url_not_allowed` (SSRF guard) / `invalid_slug` / `slug_taken` |
-| `PATCH /api/servers/:id` | admin | any of `{name, url, authType, headerName, credential, timeoutMs, toolAllowlist, enabled}` (`credential: ""` clears, omitted keeps; slug is immutable) → `server`; 422 `credential_required` when a stored credential would follow a change of URL origin (scheme://host:port), auth type or header name: such a change must send the credential again |
+| `POST /api/servers` | admin | `{slug, name, url, authType, headerName?, credential?, timeoutMs?, toolAllowlist?}` → `server`; 422 `url_not_allowed` (SSRF guard) / `invalid_slug` / `slug_taken`; 400 `invalid_request` for `authType: header` without `headerName`, or a credential with `authType: none` |
+| `PATCH /api/servers/:id` | admin | any of `{name, url, authType, headerName, credential, timeoutMs, toolAllowlist, enabled}` (`credential: ""` clears, omitted keeps; slug is immutable) → `server`; 422 `credential_required` when a stored credential would follow a change of URL origin (scheme://host:port), auth type or header name: such a change must send the credential again; 422 `url_not_allowed`; 400 `invalid_request` as for `POST` |
 | `DELETE /api/servers/:id` | admin | soft delete → 204 (its tools disappear; audit history keeps the slug snapshot) |
 | `POST /api/servers/:id/refresh` | admin | reconnect + re-list tools now → `server` |
 
@@ -65,11 +65,13 @@ Denied tools are **hidden from `tools/list`** for that user and **rejected** on 
 
 ## Audit log
 `entry` = `{id, ts, userId, userEmail, via: 'mcp'|'chat', apiKeyPrefix, serverSlug, tool, exposedName, status: 'pending'|'ok'|'error'|'timeout'|'unreachable'|'denied'|'auth_rejected', durationMs, error}`.
-`pending` = the call is still running (the row is written before the upstream is called and completed afterwards).
+`pending` = the call is still running (the row is written before the upstream is called and completed afterwards). A row left `pending` by a
+gateway that died mid-call becomes `error` at the first gateway start at least 10 minutes after the call began.
 | `GET /api/audit` | user | query `userId?, serverSlug?, status?, via?, limit (≤200, default 50), before (id cursor)` → `{items:[entry], nextBefore}`; members only ever get their own rows |
 |---|---|---|
 
-Argument values are never stored (only a SHA-256 `argsHash`, not returned by the API). A call refused by the rate limit (see MCP endpoint) is a `denied` row whose `error` starts with `rate limited`.
+Argument values are never stored (only a SHA-256 `argsHash`, not returned by the API), but `error` of a failed call keeps the upstream's
+message (up to 300 characters), which can repeat an argument such as an order ID. A call refused by the rate limit (see MCP endpoint) is a `denied` row whose `error` starts with `rate limited`.
 
 ## Observability (stand-out: metrics per server, reasons for failures)
 | Method & path | Who | Response |

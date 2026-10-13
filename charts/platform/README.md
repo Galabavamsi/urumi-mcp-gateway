@@ -15,7 +15,7 @@ and Secrets follow `docs/CONTRACTS.md` ("Platform", "gateway environment", "Seed
 | `platform-*` | NetworkPolicy ×5 (×7 with backups) | Default deny, then one allow per path (below). |
 | `postgres-backup` | CronJob (02:15 IST), only if `backup.enabled` | Nightly `pg_dump -Fc` as the `gateway` user into the PVC below, keeping the newest `backup.keep` (7). Same image as Postgres, uid 999, read-only root filesystem, requests/limits, `activeDeadlineSeconds`. |
 | `postgres-backups` | PVC (RWO), only if `backup.enabled` | The dumps. `helm.sh/resource-policy: keep`: survives `helm uninstall` and `backup.enabled=false`. |
-| `postgres-backup-volume-<hash>` | Job, only if `backup.enabled` | Mounts the backup PVC at deploy time, so local-path binds it before Helm's `--wait` gives up, and proves it is writable. |
+| `postgres-backup-volume-<hash>` | Job, only if `backup.enabled` | Mounts the backup PVC at deploy time, so local-path binds it before Helm's `--wait` gives up, and proves it is writable. A failed check fails the deploy only with `--wait-for-jobs` (our scripts pass it): plain Helm 4 `--wait` counts a started Job as ready. |
 
 Every container runs as non-root with a read-only root filesystem (writable `emptyDir`s only where the
 program needs them), no privilege escalation, all capabilities dropped, seccomp `RuntimeDefault`, no
@@ -34,12 +34,12 @@ docker build --network=host -f docker/dashboard.Dockerfile -t urumi/dashboard:$T
 k3d image import urumi/gateway:$TAG urumi/dashboard:$TAG -c urumi
 helm upgrade --install platform charts/platform -n platform -f charts/platform/values-local.yaml \
   --set-string gateway.image.tag=$TAG --set-string dashboard.image.tag=$TAG \
-  --wait --timeout 10m --rollback-on-failure
+  --wait --wait-for-jobs --timeout 10m --rollback-on-failure
 
 # production (k3s on the VPS): images from GHCR, tagged with the git SHA
 helm upgrade --install platform charts/platform -n platform -f charts/platform/values-prod.yaml \
   --set-string gateway.image.tag=$SHA --set-string dashboard.image.tag=$SHA \
-  --wait --timeout 10m --rollback-on-failure
+  --wait --wait-for-jobs --timeout 15m --rollback-on-failure
 ```
 
 `--set-string`, not `--set`: a short SHA can be all digits, which `--set` turns into a number.

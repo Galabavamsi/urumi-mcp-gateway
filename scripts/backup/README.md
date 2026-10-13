@@ -32,8 +32,11 @@ bash scripts/backup/restore-gateway.sh [dump]
 - **Same image as the server** (`mariadb:11.8.9`, `postgres:18.6-trixie`), so the dump tool always matches
   the server version. Non-root (uid 999), read-only root filesystem, all capabilities dropped, requests
   and limits, `activeDeadlineSeconds`, `concurrencyPolicy: Forbid`.
-- **Least privilege.** The dump logs in as the app user from the existing Secret (`secretKeyRef`); the
-  MariaDB dump never sees the root password. Files are written with `umask 077`.
+- **Least privilege, for MariaDB.** The MariaDB dump logs in as the app user `wordpress` from the existing
+  Secret (`secretKeyRef`) and never sees the root password. Postgres has only one role, `gateway`, and the
+  official image's `POSTGRES_USER` makes it the superuser, so the Postgres dump (like the gateway itself)
+  runs as a superuser; a separate read-only role would fix that (docs/THREAT-MODEL.md, residual risks).
+  Files are written with `umask 077`.
 - **One network path.** Backup pods carry the release's labels, so the release's default-deny policy
   already closes everything; `backup-networkpolicy.yaml` opens exactly backup pods → database port (+ DNS),
   at both ends. Helper pods of these scripts get a different label and therefore no network at all, except
@@ -45,8 +48,9 @@ bash scripts/backup/restore-gateway.sh [dump]
      `--wait` counts an unbound PVC as not ready. The CronJob's first pod comes at 02:00, so a plain
      `helm upgrade --wait --rollback-on-failure` that turns backups on timed out and rolled itself back.
      Fix: a one-shot Job (`*-backup-volume-<hash>`) mounts the volume at deploy time. It also proves the
-     backup user can write there. Its name carries a hash of its pod spec, because a Job's template is
-     immutable.
+     backup user can write there, and a failed check fails the deploy because our scripts pass
+     `--wait-for-jobs` (plain `--wait` in Helm 4 counts a Job as ready once it has started). Its name carries
+     a hash of its pod spec, because a Job's template is immutable.
   2. *kube-router needs a few seconds to add a brand-new pod to its allow rules* and refuses its
      connections until then. A Job pod connects within a second, so every retry failed the same way.
      Fix: the job waits for the database (`mariadb-admin ping` / `pg_isready`, up to a minute) first.

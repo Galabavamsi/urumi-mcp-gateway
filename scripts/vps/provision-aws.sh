@@ -20,6 +20,8 @@
 #     40 GB encrypted gp3 root disk that survives an accidental termination (DeleteOnTermination=false),
 #     IMDSv2 only with hop limit 1, termination protection on, no IAM role.
 #   - an Elastic IP associated with the instance, so the address (and the DNS record) survive stop/start.
+#   - (local, not in AWS) the instance's SSH host key, read from its console output through the EC2 API and
+#     pinned in .vps/known_hosts, so even the first ssh to it is checked (scripts/vps/common.sh).
 #
 # Needs: AWS CLI v2 with credentials (e.g. `export AWS_PROFILE=aws-main`), curl, ssh-keygen.
 # Works in WSL/Linux/macOS and in Git Bash on Windows. Settings (environment):
@@ -286,19 +288,52 @@ ensure_elastic_ip() {
   PUBLIC_IP="$(eip_ip "$alloc")"
 }
 
+# --- SSH host key, pinned out of band ----------------------------------------------------------------
+# Without this, the first ssh to a new machine trusts whatever key answers ("trust on first use"): someone
+# on your network path at that moment could pose as the VPS, and kubeconfig.sh and deploy.sh (every Secret
+# from .env) would then talk to them. cloud-init prints the instance's host keys to its serial console on
+# the first boot, and we read that console through the EC2 API: HTTPS with our AWS credentials, a channel
+# such an attacker does not control. The ed25519 key goes into VPS_KNOWN_HOSTS, which is the only key
+# common.sh's ssh options accept. A comment line records the instance, so a replaced instance (new keys,
+# same Elastic IP) is pinned again and a stop/start (same keys) is not.
+# Returns 1 if the console shows no key (cloud-init prints it about a minute after the first boot).
+pin_host_key() { # instance-id ip [attempts, 10 s apart; default 30]
+  local inst=$1 ip=$2 tries=${3:-30} key="" attempt
+  if [ -f "$VPS_KNOWN_HOSTS" ] && grep -qx "# instance $inst" "$VPS_KNOWN_HOSTS" \
+     && grep -qF "$ip ssh-ed25519 " "$VPS_KNOWN_HOSTS"; then
+    echo "  = host key of $inst pinned in $VPS_KNOWN_HOSTS"
+    return 0
+  fi
+  echo "  reading the SSH host key from the console output of $inst..."
+  for attempt in $(seq 1 "$tries"); do
+    # --latest: the live console buffer (Nitro instances such as t3). The block between the two markers holds
+    # one "<type> <base64> <comment>" line per key; grep -o keeps exactly the ed25519 type and key.
+    key="$(awsq ec2 get-console-output --instance-id "$inst" --latest --query Output | tr -d '\r' \
+      | sed -n '/-----BEGIN SSH HOST KEY KEYS-----/,/-----END SSH HOST KEY KEYS-----/p' \
+      | grep -oE 'ssh-ed25519 [A-Za-z0-9+/]+=*' | head -n 1)" || true
+    [ -n "$key" ] && break
+    [ "$attempt" -lt "$tries" ] && sleep 10
+  done
+  [ -n "$key" ] || return 1
+  mkdir -p "$(dirname "$VPS_KNOWN_HOSTS")"
+  printf '# instance %s\n%s %s\n' "$inst" "$ip" "$key" > "$VPS_KNOWN_HOSTS"
+  echo "  + host key pinned in $VPS_KNOWN_HOSTS: $(ssh-keygen -l -f "$VPS_KNOWN_HOSTS" | awk '{print $2, $4}')"
+}
+
 print_next_steps() {
   cat <<EOF
 
-VPS ready: $PUBLIC_IP   (ssh -i $VPS_SSH_KEY ubuntu@$PUBLIC_IP)
+VPS ready: $PUBLIC_IP   (host key pinned in $VPS_KNOWN_HOSTS)
 
 DNS: in Cloudflare, zone humanslop.in -> DNS -> Add record
   Type A   Name $DNS_NAME   IPv4 address $PUBLIC_IP   Proxy status: DNS only (grey cloud)   TTL Auto
-  Grey cloud on purpose: Cloudflare's proxy cuts long-lived MCP/SSE streams after about 100-125 s and
-  would terminate TLS itself. Check that it resolves:  bash scripts/vps/provision-aws.sh status
+  Grey cloud on purpose: TLS ends on our own Traefik with the Let's Encrypt certificate (HTTP-01 reaches it
+  directly), and no proxy buffers or inspects the MCP and SSE traffic.
+  Check that it resolves:  bash scripts/vps/provision-aws.sh status
 
 Next (docs/VPS.md):
   export VPS_HOST=$PUBLIC_IP
-  ssh -i $VPS_SSH_KEY ubuntu@\$VPS_HOST 'bash -s' < scripts/vps/bootstrap-k3s.sh
+  bash scripts/vps/bootstrap.sh       (runs bootstrap-k3s.sh on the VPS, over ssh with the pinned key)
   bash scripts/vps/kubeconfig.sh      then, in a second terminal:  bash scripts/vps/tunnel.sh
 EOF
   if command -v cygpath >/dev/null; then
@@ -321,6 +356,9 @@ cmd_up() {
   step "security group"; ensure_security_group "$vpc" "$ip"
   step "instance";       ensure_instance "$ami"
   step "Elastic IP";     ensure_elastic_ip
+  step "SSH host key"
+  pin_host_key "$INST" "$PUBLIC_IP" || die "the console output of $INST shows no SSH host key yet. Wait a minute and
+       run: $0 status   (it pins the key). Do not fall back to accepting the key on first connect."
   print_next_steps
 }
 
@@ -341,6 +379,12 @@ cmd_status() {
     echo "Elastic IP:  $ip (attached to: $(eip_instance "$alloc"))"
   else
     echo "Elastic IP:  none"
+  fi
+  # Pins the host key if it is not pinned yet (one look at the console, no waiting).
+  if [ -n "$inst" ] && [ -n "$ip" ] && [ "$(instance_state "$inst")" = running ]; then
+    echo "SSH host key:"
+    pin_host_key "$inst" "$ip" 1 \
+      || echo "  not in the console output (yet): cloud-init prints it about a minute after the first boot; run status again"
   fi
   if [ -n "$sg" ]; then
     echo "SSH allowed: $(ssh_rules "$sg" | awk '{print $2}' | tr '\n' ' ')(your IP now: $me)"

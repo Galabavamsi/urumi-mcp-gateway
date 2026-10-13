@@ -88,7 +88,8 @@ Routing uses the catalog's lookup table `exposedName → (serverId, originalName
 4. per-user rate limit → over: a tool result with `isError: true` (`<slug>: rate limited: ...`) and an audit row `denied`;
 5. audit row `pending` (who, which key, server, tool, SHA-256 of the arguments, never the arguments);
 6. upstream call with the server's timeout and the caller's abort signal;
-7. result capped, audit row completed with status, duration and a short error text.
+7. result capped, audit row completed with status, duration and a short error text (for a failed call the
+   upstream's own message, up to 300 characters, which can repeat an argument such as an order ID).
 
 ```mermaid
 sequenceDiagram
@@ -116,8 +117,10 @@ sequenceDiagram
   T-->>C: tool result
 ```
 
-B's API key stops at step 3 of the diagram: the MCP handler receives only a principal (user id, role, key
-prefix), and the upstream client was built with the gateway's own credential for that server. woo-mcp works
+B's API key stops at step 3 of the diagram: the SDK's MCP handler gets the request with the principal (user id,
+role, key prefix) attached, but our `tools/list` and `tools/call` handlers and `ToolRouter.callTool` receive only
+the principal, the tool name, the arguments and the abort signal, and the upstream client was built from the
+server row with the gateway's own credential for that server; it never sees the incoming request. woo-mcp works
 out "today" in the store's timezone and queries WooCommerce with `after`/`before` in UTC
 (`dates_are_gmt=true`). The chat agent takes the same path from step 3 on, through the internal listener.
 
@@ -214,7 +217,9 @@ servers serve the legacy era statelessly, so a pod restart is invisible to the g
 Any change that can alter what a client sees pushes `notifications/tools/list_changed` to every open
 `subscriptions/listen` stream on both MCP listeners: a server added, edited, enabled, disabled, deleted or
 refreshed; an upstream whose tool list or tool definitions changed; a policy change; a user's role change.
-Clients that speak 2026-07-28 (Claude Code) re-list immediately (measured under 0.1 s in the e2e check d11).
+Clients that speak 2026-07-28 get the push at once: an MCP SDK client received it within the 100 ms poll of the
+e2e check d11. Claude Code opens the same `subscriptions/listen` stream (seen in the day-1 spike); its re-list
+on the push is not part of the automated checks.
 Legacy clients (Cursor, Inspector in legacy mode) have no push channel in stateless mode and see the change on
 their next list; the server-side rejection does not depend on the client. Revoking a key or disabling a user
 also closes that key's or user's open streams. The chat agent lists tools at the start of every turn.
@@ -239,7 +244,8 @@ Postgres, then runs migrations and seeding under a Postgres advisory lock, so tw
 a rolling update never migrate at once. On SIGTERM it turns readiness red, keeps serving for 3 s while the
 endpoint removal spreads, stops accepting connections, waits up to 20 s for running tool calls (grace period
 30 s), then closes listen streams, upstream clients and the database pool. Audit rows still `pending` from a
-gateway that died mid-call are closed as errors at the next start.
+gateway that died mid-call are closed as errors at the first start at least 10 minutes after the call began
+(younger rows may belong to a pod that is still running during a rolling update).
 
 ## The chat agent
 

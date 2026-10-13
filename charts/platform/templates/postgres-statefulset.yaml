@@ -41,6 +41,8 @@ spec:
           env:
             # Applied by the entrypoint only when the data directory is empty (first start). Changing
             # the Secret later does NOT change the password inside the database (see the README).
+            # POSTGRES_USER is the role initdb creates as the SUPERUSER, and the only role there is: the
+            # gateway and the backups log in as it (docs/THREAT-MODEL.md, residual risks).
             - name: POSTGRES_USER
               value: {{ $pg.user | quote }}
             - name: POSTGRES_DB

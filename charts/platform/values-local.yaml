@@ -2,7 +2,7 @@
 # `k3d image import urumi/<image>:<tag> -c urumi`, so the tags are set at deploy time:
 #   helm upgrade --install platform charts/platform -n platform -f charts/platform/values-local.yaml \
 #     --set-string gateway.image.tag=<tag> --set-string dashboard.image.tag=<tag> \
-#     --wait --timeout 10m --rollback-on-failure
+#     --wait --wait-for-jobs --timeout 10m --rollback-on-failure
 
 ingress:
   host: app.127-0-0-1.sslip.io   # resolves to 127.0.0.1, where k3d maps Traefik's port 80

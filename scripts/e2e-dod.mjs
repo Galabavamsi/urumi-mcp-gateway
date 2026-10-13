@@ -8,7 +8,8 @@
 // Checks (each prints PASS / FAIL / SKIP with its evidence):
 //   d1  the dashboard SPA is served, the API answers, the bootstrap admin logs in
 //   d2  the admin invites A (admin) and B (member); both accept; an invite link works only once
-//   d3  GET /api/servers lists woo, supplier, firecrawl, mail (woo first), connected
+//   d3  GET /api/servers lists woo, supplier, firecrawl, mail (woo first), connected; firecrawl or mail with an
+//       empty key in .env is not registered at all, which is reported, not failed
 //   d4  B's key, both protocol eras: every server's tools under <server>__ names (the two list_products don't
 //       collide); woo__create_product and mail__send_message are hidden from B (member policy), a call is refused
 //   d5  a storefront guest Cash-on-Delivery order (the "by hand" order, placed via the Store API) is visible to B
@@ -55,9 +56,9 @@
 // always stays attributable. The supplier server is re-enabled and scaled back to 1 replica.
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
@@ -372,7 +373,7 @@ async function chatRequest(session, body) {
   }
   turn.text = turn.texts.join('\n');
   turn.seconds = (Date.now() - started) / 1000;
-  assert(!turn.error, `the chat stream sent an error event: ${turn.error}`);
+  assert(!turn.error, `the chat stream sent an error event: ${turn.error} (the chat checks need ANTHROPIC_API_KEY in .env)`);
   assert(turn.done, 'the chat stream ended without a done event');
   assert(turn.tools, 'the chat stream sent no tools event');
   return turn;
@@ -493,6 +494,8 @@ ${rows.join('\n')}
 - Bootstrap admin: Secret platform/gateway-bootstrap-admin (from .env), not listed here
 - Keep the accounts after a run: \`node scripts/e2e-dod.mjs --keep-users\`
 `;
+  // notes/ is gitignored, so a fresh clone does not have it yet. (A no-op when it exists.)
+  await mkdir(dirname(ACCOUNTS_FILE), { recursive: true, mode: 0o700 });
   await writeFile(ACCOUNTS_FILE, content, { mode: 0o600 });
 }
 
@@ -576,17 +579,25 @@ async function main() {
       },
       30_000,
     );
-    const slugs = list.map((s) => s.slug);
-    assert(JSON.stringify(slugs.filter((s) => SEED_SLUGS.includes(s))) === JSON.stringify(SEED_SLUGS), `order: ${slugs.join(', ')}`);
+    // Recorded first, so a failed order check below cannot take the later checks (d11-d14) down with it.
     state.servers = Object.fromEntries(list.map((s) => [s.slug, s]));
+    const slugs = list.map((s) => s.slug);
+    assert(slugs[0] === 'woo' && slugs.includes('supplier'), `order: ${slugs.join(', ')} (woo first, then supplier)`);
+    // The seeds that exist keep the seed-file order. (A seed whose key is empty in .env is never registered.)
+    const seeded = slugs.filter((s) => SEED_SLUGS.includes(s));
+    assert(JSON.stringify(seeded) === JSON.stringify(SEED_SLUGS.filter((s) => seeded.includes(s))), `order: ${slugs.join(', ')}`);
     // The hosted upstreams need their keys in .env and internet access. Without them the core still works, so a
     // missing one is reported (and its tools are not required in d4), not failed.
     state.externalUp = {};
     const notes = [];
     for (const slug of ['firecrawl', 'mail']) {
-      state.externalUp[slug] = state.servers[slug].status === 'connected';
-      if (!state.externalUp[slug]) notes.push(`NOTE: ${slug} is ${state.servers[slug].status} (${state.servers[slug].statusReason}); needs its key in .env and internet access`);
+      const server = state.servers[slug];
+      state.externalUp[slug] = server?.status === 'connected';
+      if (!server) notes.push(`NOTE: ${slug} is not registered (its key is empty in .env, so the gateway skipped the seed)`);
+      else if (!state.externalUp[slug]) notes.push(`NOTE: ${slug} is ${server.status} (${server.statusReason}); needs its key in .env and internet access`);
     }
+    // The brief asks for at least three upstream servers; say which key would add one.
+    assert(list.length >= 3, `only ${slugs.join(' and ')} are registered: set FIRECRAWL_API_KEY or AGENTMAIL_API_KEY in .env (or add a server in the dashboard)`);
     return [
       ...list.map(
         (s) => `${s.slug}: ${s.status} (${s.protocolEra ?? 'era ?'}), auth ${s.authType}${s.hasCredential ? ' with stored credential' : ''}, ` +
