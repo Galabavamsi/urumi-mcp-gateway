@@ -1,0 +1,35 @@
+# Local k3d cluster (inside WSL). Images are built locally, tagged with the git commit and loaded with
+# `k3d image import urumi/<image>:<tag> -c urumi`, so the tags are set at deploy time:
+#   helm upgrade --install platform charts/platform -n platform -f charts/platform/values-local.yaml \
+#     --set-string gateway.image.tag=<tag> --set-string dashboard.image.tag=<tag> \
+#     --wait --timeout 10m --rollback-on-failure
+
+ingress:
+  host: app.127-0-0-1.sslip.io   # resolves to 127.0.0.1, where k3d maps Traefik's port 80
+  tls:
+    enabled: false
+
+gateway:
+  image:
+    repository: urumi/gateway
+    tag: ""                      # --set-string gateway.image.tag=<tag>
+  publicBaseUrl: http://app.127-0-0-1.sslip.io
+  cookieSecure: false            # plain http locally: a Secure cookie would never be sent back
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { cpu: "1", memory: 384Mi }
+
+dashboard:
+  image:
+    repository: urumi/dashboard
+    tag: ""                      # --set-string dashboard.image.tag=<tag>
+  resources:
+    requests: { cpu: 5m, memory: 16Mi }
+    limits: { cpu: 100m, memory: 64Mi }
+
+postgres:
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { cpu: "1", memory: 512Mi }
+  persistence:
+    size: 1Gi

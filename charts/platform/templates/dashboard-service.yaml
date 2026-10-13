@@ -1,0 +1,17 @@
+{{- if .Values.dashboard.enabled }}
+# The SPA, routed by the Ingress at "/".
+apiVersion: v1
+kind: Service
+metadata:
+  name: dashboard
+  labels:
+    {{- include "platform.labels" (dict "root" . "component" "dashboard") | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "platform.selectorLabels" (dict "root" . "component" "dashboard") | nindent 4 }}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+{{- end }}

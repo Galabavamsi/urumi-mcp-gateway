@@ -1,0 +1,22 @@
+{{- if .Values.gateway.enabled }}
+{{- $gw := .Values.gateway -}}
+{{- /* Every seed's credential env var must be one the Deployment actually sets, or the gateway would
+       silently skip that seed ("secretEnv unset"). Catch the typo at render time instead. */}}
+{{- range $gw.seedServers }}
+{{- $secretEnv := dig "auth" "secretEnv" "" . }}
+{{- if and $secretEnv (not (hasKey $gw.seedSecretEnv $secretEnv)) }}
+{{- fail (printf "seed %q uses auth.secretEnv %s, which is not in gateway.seedSecretEnv" .slug $secretEnv) }}
+{{- end }}
+{{- end }}
+# Upstream MCP servers the gateway registers at startup (SEED_SERVERS_FILE=/config/servers.json).
+# Only names, URLs and the NAME of the env var holding each credential: no secret values.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-seed-servers
+  labels:
+    {{- include "platform.labels" (dict "root" . "component" "gateway") | nindent 4 }}
+data:
+  servers.json: |
+    {{- toPrettyJson $gw.seedServers | nindent 4 }}
+{{- end }}

@@ -1,0 +1,162 @@
+{{- if .Values.gateway.enabled }}
+{{- $gw := .Values.gateway -}}
+{{- range $envName, $_ := $gw.seedSecretEnv }}
+{{- if not (hasPrefix "SEED_" $envName) }}
+{{- fail (printf "gateway.seedSecretEnv key %s must start with SEED_ (it must not replace a core variable)" $envName) }}
+{{- end }}
+{{- end }}
+# The gateway (apps/gateway): REST API for the dashboard (/api), the aggregated MCP endpoint (/mcp),
+# the chat agent, the upstream health loop and the audit log. One replica (scaling out needs a shared
+# event bus for tool-list changes, which is out of scope). It runs its forward-only database migrations
+# at startup, under a Postgres advisory lock.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  labels:
+    {{- include "platform.labels" (dict "root" . "component" "gateway") | nindent 4 }}
+    {{- include "platform.gatewayIdentityLabels" . | nindent 4 }}
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  # Start the new pod and wait until it is ready before stopping the old one: an upgrade never drops
+  # the MCP endpoint. Both pods share the database for those seconds (hence expand/contract migrations).
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      {{- include "platform.selectorLabels" (dict "root" . "component" "gateway") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "platform.podLabels" (dict "root" . "component" "gateway") | nindent 8 }}
+        # The gateway's network identity: woo-mcp, supplier-mcp and Postgres let in only pods with it.
+        {{- include "platform.gatewayIdentityLabels" . | nindent 8 }}
+      annotations:
+        # The seed list is read once at startup; a changed checksum rolls the pod so the edit takes effect.
+        checksum/seed-servers: {{ include (print $.Template.BasePath "/gateway-configmap.yaml") . | sha256sum }}
+    spec:
+      # The gateway never talks to the Kubernetes API, so it gets no API token at all.
+      automountServiceAccountToken: false
+      # Don't inject POSTGRES_PORT=tcp://... style variables for every Service in the namespace.
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: {{ $gw.terminationGracePeriodSeconds }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        # The node image's unprivileged "node" user (numeric, so the kubelet can verify runAsNonRoot).
+        {{- include "platform.podSecurityContext" (dict "uid" 1000 "fsGroup" false) | nindent 8 }}
+      containers:
+        - name: gateway
+          image: {{ include "platform.image" (dict "name" "gateway.image" "image" $gw.image) }}
+          imagePullPolicy: {{ $gw.image.pullPolicy }}
+          # INTERNAL_MCP_PORT (8081) is deliberately not listed: it binds 127.0.0.1 only and is reached
+          # from inside this pod (the chat agent), never through a Service.
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: metrics
+              containerPort: 9091
+          env:
+            # --- listeners (docs/CONTRACTS.md "gateway environment")
+            - name: PORT
+              value: "8080"
+            - name: INTERNAL_MCP_PORT
+              value: "8081"
+            - name: METRICS_PORT
+              value: "9091"
+            # --- Postgres (the Service of this release)
+            - name: PGHOST
+              value: postgres
+            - name: PGPORT
+              value: "5432"
+            - name: PGDATABASE
+              value: {{ .Values.postgres.database | quote }}
+            - name: PGUSER
+              value: {{ .Values.postgres.user | quote }}
+            {{- include "platform.envFromSecret" (dict "env" "PGPASSWORD" "secret" .Values.secrets.postgres "key" "password") | nindent 12 }}
+            # --- the gateway's own keys (generated once by scripts/secrets.sh; required)
+            {{- include "platform.envFromSecret" (dict "env" "API_KEY_PEPPER" "secret" .Values.secrets.internal "key" "api-key-pepper") | nindent 12 }}
+            {{- include "platform.envFromSecret" (dict "env" "CREDENTIALS_KEY" "secret" .Values.secrets.internal "key" "credentials-key") | nindent 12 }}
+            {{- include "platform.envFromSecret" (dict "env" "CHAT_JWT_KEY" "secret" .Values.secrets.internal "key" "chat-jwt-key") | nindent 12 }}
+            {{- include "platform.envFromSecret" (dict "env" "SESSION_SECRET" "secret" .Values.secrets.internal "key" "session-secret") | nindent 12 }}
+            # --- from .env (optional: the gateway starts without them and says what is missing)
+            {{- include "platform.envFromSecret" (dict "env" "BOOTSTRAP_ADMIN_EMAIL" "secret" .Values.secrets.bootstrapAdmin "key" "email" "optional" true) | nindent 12 }}
+            {{- include "platform.envFromSecret" (dict "env" "BOOTSTRAP_ADMIN_PASSWORD" "secret" .Values.secrets.bootstrapAdmin "key" "password" "optional" true) | nindent 12 }}
+            {{- include "platform.envFromSecret" (dict "env" "ANTHROPIC_API_KEY" "secret" .Values.secrets.llm "key" "anthropic-api-key" "optional" true) | nindent 12 }}
+            # --- behaviour
+            - name: LLM_MODEL
+              value: {{ $gw.llmModel | quote }}
+            - name: PUBLIC_BASE_URL
+              value: {{ include "platform.publicBaseUrl" . | quote }}
+            - name: COOKIE_SECURE
+              value: {{ $gw.cookieSecure | toString | quote }}
+            - name: STORE_TZ
+              value: {{ $gw.storeTimezone | quote }}
+            - name: INTERNAL_HOST_ALLOWLIST
+              value: {{ join "," $gw.internalHostAllowlist | quote }}
+            - name: HEALTH_INTERVAL_MS
+              value: {{ $gw.healthIntervalMs | toString | quote }}
+            - name: DEFAULT_CALL_TIMEOUT_MS
+              value: {{ $gw.defaultCallTimeoutMs | toString | quote }}
+            - name: LOG_LEVEL
+              value: {{ $gw.logLevel | quote }}
+            # --- seed upstreams: the file (ConfigMap) plus one credential variable per seed
+            - name: SEED_SERVERS_FILE
+              value: /config/servers.json
+            {{- range $envName, $ref := $gw.seedSecretEnv }}
+            {{- include "platform.envFromSecret" (dict "env" $envName "secret" $ref.secretName "key" $ref.key "optional" $ref.optional) | nindent 12 }}
+            {{- end }}
+            {{- range $envName, $value := $gw.extraEnv }}
+            - name: {{ $envName }}
+              value: {{ $value | toString | quote }}
+            {{- end }}
+          # Started = the HTTP server answers /healthz. Generous (2 minutes) because a first start waits
+          # for Postgres and runs the migrations; after that, liveness takes over.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 60
+          # /readyz = Postgres reachable. It never depends on upstream health: a dead MCP server must not
+          # take the whole gateway out of the Service.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            {{- toYaml $gw.resources | nindent 12 }}
+          securityContext:
+            {{- include "platform.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            # Read-only root filesystem; Node may still want a temp dir.
+            - name: tmp
+              mountPath: /tmp
+            - name: seed-servers
+              mountPath: /config
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: seed-servers
+          configMap:
+            name: gateway-seed-servers
+{{- end }}
