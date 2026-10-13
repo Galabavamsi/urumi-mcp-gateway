@@ -1,21 +1,31 @@
-# Production: k3s on the EC2 VPS. Images come from GHCR and are tagged with the git SHA, so the
-# tags are set at deploy time (the templates refuse to render without them):
+# Production: k3s on the EC2 VPS (docs/VPS.md). scripts/vps/deploy.sh runs, in effect:
 #   helm upgrade --install woo-store charts/woo-store -n store -f charts/woo-store/values-prod.yaml \
 #     --set-string wordpress.image.tag=<sha> --set-string wooMcp.image.tag=<sha> \
-#     --wait --timeout 10m --rollback-on-failure
+#     --wait --timeout 15m --rollback-on-failure
+# Images come from GHCR tagged with the git commit CI built them from, so the tags are set at deploy
+# time (the templates refuse to render without them).
+#
+# Resource budget (requests; the whole node is in docs/VPS.md): WordPress 384Mi (its bootstrap init
+# container 192Mi runs before it), MariaDB 384Mi, woo-mcp 96Mi, wp-cron 128Mi while a run is going:
+# about 1 GiB of a t3.large's ~7.5 GiB allocatable, 450m of its 2 vCPUs.
 
-# Uncomment if the GHCR packages are private (Secret ghcr-pull, see docs/CONTRACTS.md).
-# imagePullSecrets:
-#   - name: ghcr-pull
+# Pull credentials, only while the GHCR packages are private: deploy.sh creates Secret ghcr-pull from
+# GHCR_PULL_TOKEN and then passes --set imagePullSecrets[0].name=ghcr-pull. Public packages need nothing.
+imagePullSecrets: []
 
 ingress:
   host: store.urumi.humanslop.in
   annotations:
-    # cert-manager watches this annotation and issues a Let's Encrypt certificate into the Secret
-    # named in tls.secretName (HTTP-01 challenge through Traefik).
+    # cert-manager sees this annotation plus the tls block below and keeps a Let's Encrypt certificate
+    # in tls.secretName (HTTP-01 through Traefik, see cluster/cert-manager/cluster-issuers.yaml).
+    # To try the flow with untrusted staging certificates first:
+    #   CLUSTER_ISSUER=letsencrypt-staging bash scripts/vps/deploy.sh   (re-run without it to switch back)
     cert-manager.io/cluster-issuer: letsencrypt-prod
   tls:
-    enabled: true                  # also makes WP_HOME https://...
+    # Also makes the home URL https://store.urumi.humanslop.in: WP_HOME/WP_SITEURL, and woo-mcp's
+    # WOO_HOME_URL (woo-mcp still signs OAuth requests with scheme http, because its own hop to WordPress
+    # is plain in-cluster HTTP; apps/woo-mcp/src/woo/oauth1.ts).
+    enabled: true
     secretName: woo-store-tls
 
 wordpress:
@@ -23,11 +33,19 @@ wordpress:
     repository: ghcr.io/galabavamsi/wordpress
     tag: ""                        # set with --set-string wordpress.image.tag=<git-sha>
   environmentType: production
+  resources:
+    requests: { cpu: 250m, memory: 384Mi }
+    # More burst room than the default 1Gi: up to 10 Apache/PHP workers with memory_limit 256M each
+    # (images/wordpress), and the node has the memory to spare.
+    limits: { cpu: 1500m, memory: 1536Mi }
   persistence:
-    size: 5Gi
-    storageClass: local-path       # k3s local-path on the EBS root volume (DeleteOnTermination=false)
+    size: 5Gi                      # wp-content/uploads only
+    storageClass: local-path       # k3s local-path on the EBS root volume (encrypted, DeleteOnTermination=false)
 
 mariadb:
+  resources:
+    requests: { cpu: 100m, memory: 384Mi }
+    limits: { cpu: "1", memory: 1Gi }
   persistence:
     size: 10Gi
     storageClass: local-path
@@ -36,3 +54,11 @@ wooMcp:
   image:
     repository: ghcr.io/galabavamsi/woo-mcp
     tag: ""                        # set with --set-string wooMcp.image.tag=<git-sha>
+  resources:
+    requests: { cpu: 50m, memory: 96Mi }
+    limits: { cpu: 500m, memory: 256Mi }
+
+# Scheduled MariaDB dumps (the backup block and its defaults are in values.yaml; restore steps in
+# docs/OPERATIONS.md). On in production, off locally.
+backup:
+  enabled: true

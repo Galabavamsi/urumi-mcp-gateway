@@ -1,17 +1,18 @@
-# Production k3s on the VPS. Images are built by CI and pushed to GHCR, tagged with the git SHA.
-# The tag is set at deploy time, never here:
+# Production k3s on the VPS (docs/VPS.md). Images are built by CI and pushed to GHCR, tagged with the git
+# commit. The tag is set at deploy time, never here; scripts/vps/deploy.sh runs, in effect:
 #   helm upgrade --install supplier-mcp charts/mcp-server -n mcp-upstreams \
 #     -f charts/mcp-server/values-prod.yaml -f charts/mcp-server/instances/supplier.yaml \
-#     --set-string image.tag=<git-sha> --wait --timeout 10m --rollback-on-failure
+#     --set-string image.tag=<git-sha> --wait --timeout 15m --rollback-on-failure
 image:
   registry: ghcr.io/galabavamsi
-  tag: ""                 # required at deploy (--set-string image.tag=<git-sha>); the chart fails without it
+  tag: ""                   # required at deploy (--set-string image.tag=<git-sha>); the chart fails without it
   pullPolicy: IfNotPresent  # SHA tags are immutable, so a cached image is always the right one
 
-# Uncomment if the GHCR packages are private (Secret created out of band, like every other secret).
-# imagePullSecrets:
-#   - name: ghcr-pull
+# Pull credentials, only while the GHCR packages are private: deploy.sh creates Secret ghcr-pull from
+# GHCR_PULL_TOKEN and then passes --set imagePullSecrets[0].name=ghcr-pull. Public packages need nothing.
+imagePullSecrets: []
 
+# 96Mi of the node's ~7.5 GiB allocatable (budget in docs/VPS.md); it idles around 60Mi.
 resources:
   requests: { cpu: 50m, memory: 96Mi }
   limits: { cpu: 500m, memory: 256Mi }

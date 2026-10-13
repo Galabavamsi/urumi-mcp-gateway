@@ -34,6 +34,16 @@
 // On Windows, kubectl runs inside WSL (wsl.exe -d Ubuntu --exec ...). Exit code 0 = every check passed.
 // Cost: four short Claude Haiku chat turns (about one US cent) and, for d9, one Claude Code prompt.
 //
+// The defaults are the local k3d cluster. To run against another deployment (e.g. the VPS, docs/VPS.md):
+//   E2E_APP_URL       the dashboard/gateway, e.g. https://app.urumi.humanslop.in  (default http://app.127-0-0-1.sslip.io;
+//                     the older name APP_URL still works)
+//   E2E_STORE_URL     the storefront, e.g. https://store.urumi.humanslop.in        (default http://store.127-0-0-1.sslip.io;
+//                     the older name STORE_URL still works)
+//   E2E_KUBE_CONTEXT  kubectl context, e.g. urumi-vps                              (default: the current context)
+//   E2E_KUBECONFIG    kubeconfig file, e.g. /home/<you>/.kube/urumi-vps.yaml       (default: kubectl's own default)
+//   E2E_WSL=0         run kubectl directly even on Windows                         (default: through WSL on Windows)
+// Against another deployment the accounts note is notes/demo-accounts.<app host>.md, so the local one is kept.
+//
 // Secrets: the bootstrap admin's credentials are read with kubectl into memory. A's and B's passwords are
 // generated here and written only to notes/demo-accounts.local.md (gitignored, private vault); API keys exist only
 // in memory (and, for d9, in a temporary MCP config file deleted right after). Nothing secret is printed.
@@ -52,13 +62,22 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 
-const APP_URL = (process.env.APP_URL ?? 'http://app.127-0-0-1.sslip.io').replace(/\/+$/, '');
-const STORE_URL = (process.env.STORE_URL ?? 'http://store.127-0-0-1.sslip.io').replace(/\/+$/, '');
+const LOCAL_APP_URL = 'http://app.127-0-0-1.sslip.io';
+const APP_URL = (process.env.E2E_APP_URL ?? process.env.APP_URL ?? LOCAL_APP_URL).replace(/\/+$/, '');
+const STORE_URL = (process.env.E2E_STORE_URL ?? process.env.STORE_URL ?? 'http://store.127-0-0-1.sslip.io').replace(/\/+$/, '');
 const WSL_DISTRO = process.env.WSL_DISTRO ?? 'Ubuntu';
+const USE_WSL = process.platform === 'win32' && process.env.E2E_WSL !== '0';
+// Flags that pin every kubectl call to one cluster. Empty by default: the current context.
+const KUBECTL_FLAGS = [
+  ...(process.env.E2E_KUBECONFIG ? ['--kubeconfig', process.env.E2E_KUBECONFIG] : []),
+  ...(process.env.E2E_KUBE_CONTEXT ? ['--context', process.env.E2E_KUBE_CONTEXT] : []),
+];
 const KEEP_USERS = process.argv.includes('--keep-users');
 const SKIP_CLAUDE_CODE = process.argv.includes('--no-claude-code');
 const RUN_ID = Date.now().toString(36);
-const ACCOUNTS_FILE = fileURLToPath(new URL('../notes/demo-accounts.local.md', import.meta.url));
+// One private note per deployment, so a run against the VPS never overwrites the local accounts.
+const ACCOUNTS_NOTE = APP_URL === LOCAL_APP_URL ? 'demo-accounts.local.md' : `demo-accounts.${new URL(APP_URL).hostname}.md`;
+const ACCOUNTS_FILE = fileURLToPath(new URL(`../notes/${ACCOUNTS_NOTE}`, import.meta.url));
 
 const USER_A = { label: 'A', email: 'asha@urumi.test', name: 'Asha (DoD admin)', role: 'admin' };
 const USER_B = { label: 'B', email: 'bharat@urumi.test', name: 'Bharat (DoD member)', role: 'member' };
@@ -120,9 +139,13 @@ const short = (text, max = 160) => (text.length > max ? `${text.slice(0, max)}â€
 // ---------------------------------------------------------------------------------------------------
 // kubectl, WP-CLI and psql (inside WSL when running on Windows)
 // ---------------------------------------------------------------------------------------------------
-/** On Windows the cluster tools live in WSL. `--exec` runs the program without a shell, so arguments arrive as-is. */
+/**
+ * On Windows the cluster tools live in WSL. `--exec` runs the program without a shell, so arguments arrive as-is.
+ * A kubectl call also gets the E2E_KUBECONFIG / E2E_KUBE_CONTEXT flags (none by default).
+ */
 function inCluster(argv) {
-  return process.platform === 'win32' ? ['wsl.exe', ['-d', WSL_DISTRO, '--exec', ...argv]] : [argv[0], argv.slice(1)];
+  const pinned = argv[0] === 'kubectl' ? ['kubectl', ...KUBECTL_FLAGS, ...argv.slice(1)] : argv;
+  return USE_WSL ? ['wsl.exe', ['-d', WSL_DISTRO, '--exec', ...pinned]] : [pinned[0], pinned.slice(1)];
 }
 
 /** Runs a program; never rejects on a non-zero exit (the caller decides), only when it cannot start at all. */
@@ -537,7 +560,7 @@ async function main() {
     const fresh = new Session('A-login');
     await fresh.login(USER_A.email, passwords.A);
     await fresh.ok('POST', '/auth/logout');
-    lines.push(`passwords generated and stored only in notes/demo-accounts.local.md (gitignored); A's password login works`);
+    lines.push(`passwords generated and stored only in notes/${ACCOUNTS_NOTE} (gitignored); A's password login works`);
     return lines;
   });
 

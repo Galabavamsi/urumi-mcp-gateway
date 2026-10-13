@@ -1,18 +1,24 @@
-# Production: k3s on the EC2 VPS. Images come from GHCR and are tagged with the git SHA, so the
-# tags are set at deploy time (the templates refuse to render without them):
+# Production: k3s on the EC2 VPS (docs/VPS.md). scripts/vps/deploy.sh runs, in effect:
 #   helm upgrade --install platform charts/platform -n platform -f charts/platform/values-prod.yaml \
 #     --set-string gateway.image.tag=<sha> --set-string dashboard.image.tag=<sha> \
-#     --wait --timeout 10m --rollback-on-failure
+#     --wait --timeout 15m --rollback-on-failure
+# Images come from GHCR tagged with the git commit CI built them from, so the tags are set at deploy
+# time (the templates refuse to render without them).
+#
+# Resource budget (requests; the whole node is in docs/VPS.md): gateway 192Mi, dashboard 32Mi,
+# Postgres 256Mi: under 0.5 GiB of a t3.large's ~7.5 GiB allocatable, 210m of its 2 vCPUs.
 
-# Uncomment if the GHCR packages are private (Secret ghcr-pull, see docs/CONTRACTS.md).
-# imagePullSecrets:
-#   - name: ghcr-pull
+# Pull credentials, only while the GHCR packages are private: deploy.sh creates Secret ghcr-pull from
+# GHCR_PULL_TOKEN and then passes --set imagePullSecrets[0].name=ghcr-pull. Public packages need nothing.
+imagePullSecrets: []
 
 ingress:
   host: app.urumi.humanslop.in
   annotations:
-    # cert-manager watches this annotation and issues a Let's Encrypt certificate into the Secret
-    # named in tls.secretName (HTTP-01 challenge through Traefik).
+    # cert-manager sees this annotation plus the tls block below and keeps a Let's Encrypt certificate
+    # in tls.secretName (HTTP-01 through Traefik, see cluster/cert-manager/cluster-issuers.yaml).
+    # To try the flow with untrusted staging certificates first:
+    #   CLUSTER_ISSUER=letsencrypt-staging bash scripts/vps/deploy.sh   (re-run without it to switch back)
     cert-manager.io/cluster-issuer: letsencrypt-prod
   tls:
     enabled: true
@@ -22,8 +28,15 @@ gateway:
   image:
     repository: ghcr.io/galabavamsi/gateway
     tag: ""                        # set with --set-string gateway.image.tag=<git-sha>
+  # What the UI shows (MCP URL = <publicBaseUrl>/mcp, invite links). Must be https://<ingress.host>; the
+  # chart refuses an https URL without cookieSecure: true (and the reverse).
   publicBaseUrl: https://app.urumi.humanslop.in
-  cookieSecure: true
+  cookieSecure: true               # the session cookie is only ever sent over HTTPS
+  resources:
+    requests: { cpu: 100m, memory: 192Mi }
+    # More burst room than the default 512Mi: chat streams plus upstream responses buffered up to 4 MB
+    # each, with several users at once.
+    limits: { cpu: "1", memory: 768Mi }
 
 dashboard:
   image:
@@ -33,9 +46,14 @@ dashboard:
 postgres:
   persistence:
     size: 5Gi
-    storageClass: local-path       # k3s local-path on the EBS root volume (DeleteOnTermination=false)
+    storageClass: local-path       # k3s local-path on the EBS root volume (encrypted, DeleteOnTermination=false)
 
-# Prometheus is not installed yet. When it is, open the metrics port to it only:
+# Scheduled Postgres dumps (the backup block and its defaults are in values.yaml; restore steps in
+# docs/OPERATIONS.md). On in production, off locally.
+backup:
+  enabled: true
+
+# Prometheus is not installed. When it is, open the metrics port to it only:
 # networkPolicy:
 #   metricsFrom:
 #     - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }

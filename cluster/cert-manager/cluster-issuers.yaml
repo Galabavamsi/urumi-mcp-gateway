@@ -1,0 +1,61 @@
+# Let's Encrypt issuers for the VPS. Applied by scripts/vps/install-addons.sh, which fills in the email
+# line from ACME_EMAIL (environment or .env) or removes it when ACME_EMAIL is empty: no address is
+# committed. The email is optional: since June 2025 Let's Encrypt sends no expiry emails and stores no
+# account addresses (an address you give is only offered its mailing lists).
+#
+# How a certificate is issued (HTTP-01). An Ingress with the annotation
+# cert-manager.io/cluster-issuer: letsencrypt-prod and a tls block (charts/*/values-prod.yaml) makes
+# cert-manager:
+#   1. start a small solver pod plus a temporary Ingress (class traefik) for
+#      http://<host>/.well-known/acme-challenge/<token>, in the same namespace as the Ingress
+#   2. fetch that URL itself first ("self-check"), then ask Let's Encrypt to fetch it from the internet
+#   3. on success, store the certificate in the Secret named by the Ingress's tls.secretName and renew it
+#      about 30 days before it expires
+#
+# The HTTP -> HTTPS redirect (cluster/traefik-prod.yaml) redirects the challenge URL too, and that is
+# fine: Let's Encrypt follows redirects to https on port 443 and does not check the certificate there
+# (it is Traefik's self-signed default until the real one exists, which is what we are asking for).
+# cert-manager's self-check does the same (it follows redirects and skips certificate checks). On
+# https, the solver Ingress still matches: it has no router.entrypoints annotation, so Traefik serves it
+# on both entrypoints, and its exact challenge path beats the app's "/" rule.
+# The solver pods are not matched by our charts' default-deny NetworkPolicies (those select only pods
+# labelled with the chart's release), and they meet the namespaces' Pod Security level.
+#
+#   letsencrypt-staging  untrusted test certificates, generous rate limits: use it to try the flow
+#   letsencrypt-prod     real certificates; rate limits apply (e.g. 5 failed validations per hostname per
+#                        hour, 5 identical certificates per week), so try staging first if in doubt
+# charts/*/values-prod.yaml use letsencrypt-prod; `CLUSTER_ISSUER=letsencrypt-staging bash
+# scripts/vps/deploy.sh` switches both Ingresses (and back again without it).
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+  labels:
+    app.kubernetes.io/part-of: urumi
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: "${ACME_EMAIL}"
+    privateKeySecretRef:
+      name: letsencrypt-staging-account   # the ACME account key; cert-manager creates it in namespace cert-manager
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: traefik
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+  labels:
+    app.kubernetes.io/part-of: urumi
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: "${ACME_EMAIL}"
+    privateKeySecretRef:
+      name: letsencrypt-prod-account
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: traefik
