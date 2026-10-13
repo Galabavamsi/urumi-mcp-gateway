@@ -12,6 +12,7 @@
     "test": "pnpm -r --if-present test"
   },
   "devDependencies": {
+    "@modelcontextprotocol/client": "2.3.1",
     "@types/node": "24",
     "esbuild": "^0.28.2",
     "typescript": "^7.0.2",
