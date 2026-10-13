@@ -1,0 +1,134 @@
+{
+    "generated_by": "apps/woo-mcp/test/oauth1-reference/generate.sh",
+    "wordpress": "7.1.3",
+    "woocommerce": "11.2.0",
+    "php": "8.3.35",
+    "vectors": [
+        {
+            "name": "orders for one store-local day (naive UTC bounds, dates_are_gmt)",
+            "method": "GET",
+            "home_url": "http://store.127-0-0-1.sslip.io",
+            "path": "/wp-json/wc/v3/orders",
+            "query": [
+                [
+                    "after",
+                    "2026-10-13T18:29:59"
+                ],
+                [
+                    "before",
+                    "2026-10-14T18:30:00"
+                ],
+                [
+                    "dates_are_gmt",
+                    "true"
+                ],
+                [
+                    "status",
+                    "any"
+                ],
+                [
+                    "per_page",
+                    "20"
+                ],
+                [
+                    "page",
+                    "1"
+                ],
+                [
+                    "_fields",
+                    "id,number,status,date_created_gmt,total"
+                ]
+            ],
+            "nonce": "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+            "timestamp": 1791900000,
+            "consumer_key": "ck_test_consumer_key_for_signature_vectors",
+            "consumer_secret": "cs_test_consumer_secret_for_signature_vectors",
+            "expected": {
+                "request_uri": "/wp-json/wc/v3/orders?after=2026-10-13T18%3A29%3A59&before=2026-10-14T18%3A30%3A00&dates_are_gmt=true&status=any&per_page=20&page=1&_fields=id%2Cnumber%2Cstatus%2Cdate_created_gmt%2Ctotal",
+                "base_string": "GET&http%3A%2F%2Fstore.127-0-0-1.sslip.io%2Fwp-json%2Fwc%2Fv3%2Forders&_fields%3Did%252Cnumber%252Cstatus%252Cdate_created_gmt%252Ctotal%26after%3D2026-10-13T18%253A29%253A59%26before%3D2026-10-14T18%253A30%253A00%26dates_are_gmt%3Dtrue%26oauth_consumer_key%3Dck_test_consumer_key_for_signature_vectors%26oauth_nonce%3D0f1e2d3c4b5a69788796a5b4c3d2e1f0%26oauth_signature_method%3DHMAC-SHA256%26oauth_timestamp%3D1791900000%26page%3D1%26per_page%3D20%26status%3Dany",
+                "signature": "B0DuGVYp78Oaa5wUiJUidqX7z4lmFtLrE2KyM088qP4=",
+                "authorization": "OAuth oauth_consumer_key=\"ck_test_consumer_key_for_signature_vectors\", oauth_nonce=\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\", oauth_signature=\"B0DuGVYp78Oaa5wUiJUidqX7z4lmFtLrE2KyM088qP4%3D\", oauth_signature_method=\"HMAC-SHA256\", oauth_timestamp=\"1791900000\""
+            }
+        },
+        {
+            "name": "values needing encoding, unicode, nested filter[] keys and strcmp key order",
+            "method": "GET",
+            "home_url": "http://store.127-0-0-1.sslip.io",
+            "path": "/wp-json/wc/v3/products",
+            "query": [
+                [
+                    "search",
+                    "Masala Chai & Tea + Spices = ₹299 (250g) ~/*!'[] चाय"
+                ],
+                [
+                    "filter[period]",
+                    "week"
+                ],
+                [
+                    "filter[a]",
+                    "b c"
+                ],
+                [
+                    "per_page",
+                    "5"
+                ],
+                [
+                    "a-b",
+                    "1"
+                ],
+                [
+                    "Zeta",
+                    "uppercase keys sort before lowercase"
+                ],
+                [
+                    "empty",
+                    ""
+                ]
+            ],
+            "nonce": "aaaabbbbccccddddeeeeffff00001111",
+            "timestamp": 1791900123,
+            "consumer_key": "ck_test_consumer_key_for_signature_vectors",
+            "consumer_secret": "cs_test_consumer_secret_for_signature_vectors",
+            "expected": {
+                "request_uri": "/wp-json/wc/v3/products?search=Masala%20Chai%20%26%20Tea%20%2B%20Spices%20%3D%20%E2%82%B9299%20%28250g%29%20~%2F%2A%21%27%5B%5D%20%E0%A4%9A%E0%A4%BE%E0%A4%AF&filter%5Bperiod%5D=week&filter%5Ba%5D=b%20c&per_page=5&a-b=1&Zeta=uppercase%20keys%20sort%20before%20lowercase&empty=",
+                "base_string": "GET&http%3A%2F%2Fstore.127-0-0-1.sslip.io%2Fwp-json%2Fwc%2Fv3%2Fproducts&Zeta%3Duppercase%2520keys%2520sort%2520before%2520lowercase%26a-b%3D1%26empty%3D%26filter%255Bperiod%255D%3Dweek%26filter%255Ba%255D%3Db%2520c%26oauth_consumer_key%3Dck_test_consumer_key_for_signature_vectors%26oauth_nonce%3Daaaabbbbccccddddeeeeffff00001111%26oauth_signature_method%3DHMAC-SHA256%26oauth_timestamp%3D1791900123%26per_page%3D5%26search%3DMasala%2520Chai%2520%2526%2520Tea%2520%252B%2520Spices%2520%253D%2520%25E2%2582%25B9299%2520%2528250g%2529%2520~%252F%252A%2521%2527%255B%255D%2520%25E0%25A4%259A%25E0%25A4%25BE%25E0%25A4%25AF",
+                "signature": "YcBobLc3HIB7LV1o3fDRAQv6BZxh9SuFZPGLTiwH+Aw=",
+                "authorization": "OAuth oauth_consumer_key=\"ck_test_consumer_key_for_signature_vectors\", oauth_nonce=\"aaaabbbbccccddddeeeeffff00001111\", oauth_signature=\"YcBobLc3HIB7LV1o3fDRAQv6BZxh9SuFZPGLTiwH%2BAw%3D\", oauth_signature_method=\"HMAC-SHA256\", oauth_timestamp=\"1791900123\""
+            }
+        },
+        {
+            "name": "https home URL with port, mixed case and a sub-path; POST body is not signed",
+            "method": "POST",
+            "home_url": "https://Store.Example.COM:8443/shop",
+            "path": "/wp-json/wc/v3/products",
+            "query": [],
+            "nonce": "00112233445566778899aabbccddeeff",
+            "timestamp": 1791900456,
+            "consumer_key": "ck_test_consumer_key_for_signature_vectors",
+            "consumer_secret": "cs_test_consumer_secret_for_signature_vectors",
+            "expected": {
+                "request_uri": "/wp-json/wc/v3/products",
+                "base_string": "POST&http%3A%2F%2FStore.Example.COM%3A8443%2Fshop%2Fwp-json%2Fwc%2Fv3%2Fproducts&oauth_consumer_key%3Dck_test_consumer_key_for_signature_vectors%26oauth_nonce%3D00112233445566778899aabbccddeeff%26oauth_signature_method%3DHMAC-SHA256%26oauth_timestamp%3D1791900456",
+                "signature": "Y8ylz32SXbf0/bPsSMdatWqJigbSLnvlewQpVnN7zu8=",
+                "authorization": "OAuth oauth_consumer_key=\"ck_test_consumer_key_for_signature_vectors\", oauth_nonce=\"00112233445566778899aabbccddeeff\", oauth_signature=\"Y8ylz32SXbf0%2FbPsSMdatWqJigbSLnvlewQpVnN7zu8%3D\", oauth_signature_method=\"HMAC-SHA256\", oauth_timestamp=\"1791900456\""
+            }
+        },
+        {
+            "name": "production https home URL, PUT to an order",
+            "method": "PUT",
+            "home_url": "https://store.urumi.humanslop.in",
+            "path": "/wp-json/wc/v3/orders/123",
+            "query": [],
+            "nonce": "ffeeddccbbaa99887766554433221100",
+            "timestamp": 1791900789,
+            "consumer_key": "ck_test_consumer_key_for_signature_vectors",
+            "consumer_secret": "cs_test_consumer_secret_for_signature_vectors",
+            "expected": {
+                "request_uri": "/wp-json/wc/v3/orders/123",
+                "base_string": "PUT&http%3A%2F%2Fstore.urumi.humanslop.in%2Fwp-json%2Fwc%2Fv3%2Forders%2F123&oauth_consumer_key%3Dck_test_consumer_key_for_signature_vectors%26oauth_nonce%3Dffeeddccbbaa99887766554433221100%26oauth_signature_method%3DHMAC-SHA256%26oauth_timestamp%3D1791900789",
+                "signature": "UchYetyRs+uAWszCnj8FfaWsJfzHCsRBrRMszx38Ulg=",
+                "authorization": "OAuth oauth_consumer_key=\"ck_test_consumer_key_for_signature_vectors\", oauth_nonce=\"ffeeddccbbaa99887766554433221100\", oauth_signature=\"UchYetyRs%2BuAWszCnj8FfaWsJfzHCsRBrRMszx38Ulg%3D\", oauth_signature_method=\"HMAC-SHA256\", oauth_timestamp=\"1791900789\""
+            }
+        }
+    ]
+}
