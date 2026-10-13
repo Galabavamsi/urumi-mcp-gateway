@@ -337,7 +337,12 @@ async function chatRequest(session, body) {
     if (event === 'tools') turn.tools = data;
     else if (event === 'text') turn.texts.push(data.text);
     else if (event === 'tool_call') turn.calls.push({ id: data.id, name: data.name, args: data.args });
-    else if (event === 'tool_result') Object.assign(turn.calls.find((c) => c.id === data.id) ?? {}, data);
+    else if (event === 'tool_result') {
+      // After an approval the stream continues with tool_result for calls announced in the PREVIOUS request.
+      const call = turn.calls.find((c) => c.id === data.id);
+      if (call) Object.assign(call, data);
+      else turn.calls.push({ ...data });
+    }
     else if (event === 'confirm_required') turn.confirm = data;
     else if (event === 'done') turn.done = data;
     else if (event === 'error') turn.error = data.message;
@@ -783,7 +788,9 @@ async function main() {
         `answer: "${short(String(result.result), 300)}"`,
       ];
     } finally {
-      await rm(dir, { recursive: true, force: true }); // the file held B's key
+      // The file held B's key. On Windows the claude process can hold its working directory for a moment after it
+      // exits (EBUSY), so let rm retry instead of failing the check (and leaving the key file behind).
+      await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
     }
   });
 
