@@ -1,0 +1,63 @@
+{{- if and .Values.backup.enabled .Values.networkPolicy.enabled }}
+{{- $np := .Values.networkPolicy -}}
+{{- $postgres := include "platform.selectorLabels" (dict "root" . "component" "postgres") -}}
+{{- $backup := include "platform.selectorLabels" (dict "root" . "component" "postgres-backup") -}}
+# The backup's one network path: backup pods --5432--> Postgres (and DNS to find it).
+#
+# Backup pods carry this release's labels, so the release's default-deny policy (networkpolicies.yaml)
+# already closes everything else, in and out. A path needs a rule at both ends: one for the backup
+# pods' egress, and one for Postgres' ingress, whose own policy only lets in the gateway's identity.
+# The volume-check Job and the scripts' helper pods use other labels, so they get no network at all;
+# scripts/backup/restore-gateway.sh gives its restore pod this identity on purpose.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-postgres-backup
+  labels:
+    {{- include "platform.labels" (dict "root" . "component" "network-policy") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- $backup | nindent 6 }}
+  # Ingress listed with no rules: nothing may connect to a backup pod.
+  policyTypes: [Ingress, Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- $postgres | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 5432 }
+    # DNS is also opened for every pod of the release by <release>-allow-dns; repeated here so this
+    # policy alone lists everything a backup pod may reach.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $np.dns.namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml $np.dns.podLabels | nindent 14 }}
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+---
+# Postgres' side of the same path: in from the backup pods, on 5432 only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-postgres-from-backup
+  labels:
+    {{- include "platform.labels" (dict "root" . "component" "network-policy") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- $postgres | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- $backup | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 5432 }
+{{- end }}

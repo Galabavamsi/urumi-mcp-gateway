@@ -1,0 +1,26 @@
+{{- if .Values.backup.enabled }}
+# The backup volume: the Postgres dumps written by the postgres-backup CronJob. Its own PVC, not the
+# database's, so a full backup volume can never stop the database (and the other way round).
+#
+# On k3s, local-path puts it on the same disk as the database. That protects against logical damage
+# (a bad migration, a deleted server or user, a broken upgrade) but not against losing the disk or the
+# VM: copy dumps off the machine with scripts/backup/fetch.sh.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-backups
+  labels:
+    {{- include "platform.labels" (dict "root" . "component" "postgres-backup") | nindent 4 }}
+  annotations:
+    # Never deleted by Helm: not by `helm uninstall`, and not by turning backups off. The dumps are what
+    # you need after a disaster. Turning backups on again adopts this PVC. Delete it by hand to wipe them.
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- with .Values.backup.persistence.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.backup.persistence.size }}
+{{- end }}

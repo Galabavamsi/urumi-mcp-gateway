@@ -127,3 +127,21 @@ networkPolicy:
     namespace: kube-system
     podLabels:
       app.kubernetes.io/name: traefik
+
+# --- Backups: a nightly mariadb-dump into a volume of its own (templates/backup-*.yaml) ----------
+# Off by default; production turns it on. The dump runs on the mariadb image above (client = server
+# version) and logs in as the app user from secrets.db (reading is all a dump needs).
+# Operations live in scripts/backup/: backup-now.sh (dump now), verify.sh (test-restore a dump into a
+# throwaway server), fetch.sh (copy one to your laptop), restore-store.sh (put one back).
+backup:
+  enabled: false
+  schedule: "0 2 * * *"           # every night at 02:00...
+  timeZone: Asia/Kolkata          # ...store-local time (CronJob timeZone: an IANA zone name)
+  keep: 7                         # newest dumps kept on the volume (0 = never delete any)
+  activeDeadlineSeconds: 900      # a run still busy after 15 minutes is killed; its partial file never counts
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { cpu: 500m, memory: 256Mi }
+  persistence:
+    size: 2Gi                     # gzip'd dumps; a demo store's dump is well under 1 MB
+    storageClass: ""              # "" = the cluster's default StorageClass
