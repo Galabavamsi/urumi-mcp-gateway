@@ -1,0 +1,32 @@
+# secrets — never commit (scripts/secrets.sh reads .env and creates Kubernetes Secrets)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+kubeconfig*
+
+# private material: assignment brief, raw research notes, personal study notes, tool caches
+assignment-info/
+.research/
+notes/
+.firecrawl/
+
+# node / build
+node_modules/
+dist/
+build/
+.turbo/
+coverage/
+*.tsbuildinfo
+
+# helm
+charts/*/charts/
+*.tgz
+
+# os / editor
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+.idea/

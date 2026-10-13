@@ -1,0 +1,36 @@
+# Namespaces are created by scripts (not by the charts) so Pod Security labels are set once and
+# `helm uninstall` never deletes a namespace. Applied by scripts/secrets.sh and scripts/dev-up.sh.
+#   store          WordPress + WooCommerce, MariaDB, our woo-mcp server   (one per store)
+#   platform       gateway backend, dashboard, Postgres
+#   mcp-upstreams  extra in-cluster MCP servers (supplier)
+# enforce=baseline everywhere; warn/audit=restricted so any workload that misses the stricter
+# profile shows up in `kubectl` warnings and can be tightened.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: store
+  labels:
+    app.kubernetes.io/part-of: urumi
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: platform
+  labels:
+    app.kubernetes.io/part-of: urumi
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mcp-upstreams
+  labels:
+    app.kubernetes.io/part-of: urumi
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted

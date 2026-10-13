@@ -1,0 +1,17 @@
+{
+  "name": "@urumi/woo-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Our WooCommerce MCP server: exposes the store's products and orders as MCP tools over Streamable HTTP",
+  "scripts": {
+    "build": "node ../../scripts/build-app.mjs src/server.ts dist/server.mjs",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.3.1",
+    "@urumi/mcp-common": "workspace:*",
+    "zod": "^4.6.5"
+  }
+}

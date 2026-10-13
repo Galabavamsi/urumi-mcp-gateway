@@ -1,0 +1,26 @@
+# Local cluster: k3d (k3s in Docker) — same k3s build as the VPS, so Traefik, local-path storage,
+# ServiceLB and the kube-router NetworkPolicy controller behave identically in both places.
+# Create:  k3d cluster create --config cluster/k3d-local.yaml
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+metadata:
+  name: urumi
+servers: 1
+agents: 0
+image: rancher/k3s:v1.36.5-k3s1
+kubeAPI:
+  host: 127.0.0.1        # avoid k3d-on-Windows writing 0.0.0.0/host.docker.internal into kubeconfig
+  hostIP: 127.0.0.1
+  hostPort: "6550"
+ports:
+  - port: 80:80          # Traefik (Ingress) HTTP  -> http://*.127-0-0-1.sslip.io
+    nodeFilters: [loadbalancer]
+  - port: 443:443        # Traefik HTTPS (unused locally, kept for parity)
+    nodeFilters: [loadbalancer]
+options:
+  k3d:
+    wait: true
+    timeout: 180s
+  kubeconfig:
+    updateDefaultKubeconfig: true
+    switchCurrentContext: true

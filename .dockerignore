@@ -1,0 +1,12 @@
+**/node_modules
+**/dist
+.git
+.env
+.env.*
+assignment-info
+.research
+notes
+docs
+charts
+cluster
+images
