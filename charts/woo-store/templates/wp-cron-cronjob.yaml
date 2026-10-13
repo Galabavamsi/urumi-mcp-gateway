@@ -1,0 +1,69 @@
+{{- if .Values.wordpress.cron.enabled }}
+{{- $image := include "woo-store.image" (dict "name" "wordpress.image" "image" .Values.wordpress.image) -}}
+# WP-Cron replacement. WordPress normally runs due cron events (and WooCommerce's Action Scheduler
+# queue) by firing an HTTP request at its own public URL on page views. That loopback cannot work
+# here (the public host resolves to 127.0.0.1 or to the VPS, and egress is denied), so the chart sets
+# DISABLE_WP_CRON and this job runs due events with WP-CLI against the database instead.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: wp-cron
+  labels:
+    {{- include "woo-store.labels" (dict "root" . "component" "wp-cron") | nindent 4 }}
+spec:
+  schedule: {{ .Values.wordpress.cron.schedule | quote }}
+  # Never two runs at once: a slow run simply makes the next one skip.
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 120
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0                  # the next scheduled run is the retry
+      activeDeadlineSeconds: {{ .Values.wordpress.cron.activeDeadlineSeconds }}
+      template:
+        metadata:
+          labels:
+            {{- include "woo-store.podLabels" (dict "root" . "component" "wp-cron") | nindent 12 }}
+        spec:
+          restartPolicy: Never
+          enableServiceLinks: false
+          automountServiceAccountToken: false
+          securityContext:
+            {{- include "woo-store.podSecurityContext" (dict "uid" 33 "fsGroup" true) | nindent 12 }}
+          containers:
+            # A run-to-completion Job container: Kubernetes probes are for long-running containers;
+            # here success is exit code 0 and activeDeadlineSeconds bounds a hung run.
+            - name: wp-cron
+              image: {{ $image }}
+              imagePullPolicy: {{ .Values.wordpress.image.pullPolicy }}
+              command:
+                - /bin/sh
+                - -c
+                # Before the first bootstrap has finished there is nothing to run yet.
+                - |
+                  if ! wp core is-installed; then echo "wp-cron: WordPress not installed yet, skipping"; exit 0; fi
+                  exec wp cron event run --due-now
+              envFrom:
+                - configMapRef:
+                    name: wordpress-env
+              env:
+                {{- include "woo-store.wordpressSecretEnv" . | nindent 16 }}
+              resources:
+                {{- toYaml .Values.wordpress.cron.resources | nindent 16 }}
+              securityContext:
+                {{- include "woo-store.containerSecurityContext" . | nindent 16 }}
+              volumeMounts:
+                # Scheduled WooCommerce jobs write logs and exports to uploads, like the web pod.
+                - name: uploads
+                  mountPath: /var/www/html/wp-content/uploads
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: uploads
+              persistentVolumeClaim:
+                claimName: wordpress-uploads
+            - name: tmp
+              emptyDir:
+                sizeLimit: 256Mi
+{{- end }}

@@ -1,0 +1,14 @@
+apiVersion: v2
+name: woo-store
+description: >-
+  One WooCommerce store per namespace: WordPress + WooCommerce (our image), MariaDB, the woo-mcp
+  server, a WP-Cron CronJob, an Ingress and default-deny NetworkPolicies.
+type: application
+# Chart version: bump on any template or values change.
+version: 0.1.0
+# The WooCommerce version baked into the store image (images/wordpress).
+appVersion: "11.2.1"
+kubeVersion: ">=1.30.0-0"
+keywords: [woocommerce, wordpress, mariadb, mcp]
+sources:
+  - https://github.com/Galabavamsi/urumi-mcp-gateway

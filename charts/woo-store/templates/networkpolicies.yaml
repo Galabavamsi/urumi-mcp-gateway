@@ -1,0 +1,165 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $np := .Values.networkPolicy -}}
+{{- $release := dict "app.kubernetes.io/instance" .Release.Name -}}
+{{- $wordpress := include "woo-store.selectorLabels" (dict "root" . "component" "wordpress") -}}
+{{- $mariadb := include "woo-store.selectorLabels" (dict "root" . "component" "mariadb") -}}
+{{- $cron := include "woo-store.selectorLabels" (dict "root" . "component" "wp-cron") -}}
+{{- $wooMcp := include "woo-store.selectorLabels" (dict "root" . "component" "woo-mcp") -}}
+# The store's firewall. NetworkPolicies are allow-lists that add up: the first policy denies all
+# traffic in and out of every pod of this release, and each policy after it opens one path.
+#
+#   Traefik (kube-system) --8080--> wordpress --3306--> mariadb <--3306-- wp-cron
+#   gateway (platform)    --8080--> woo-mcp   --8080--> wordpress
+#   every pod             --53----> kube-dns
+#
+# Kubelet probes come from the node and are always allowed. Policies select pods by label, so a
+# pod is only covered once it carries this release's labels (kube-router takes a few seconds to see
+# brand-new pods, which is why woo-mcp also requires a bearer token).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-default-deny
+  labels:
+    {{- include "woo-store.labels" (dict "root" . "component" "network-policy") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- toYaml $release | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+---
+# DNS: every pod may resolve names (Service names, the database host) through CoreDNS.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-allow-dns
+  labels:
+    {{- include "woo-store.labels" (dict "root" . "component" "network-policy") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- toYaml $release | nindent 6 }}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $np.dns.namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml $np.dns.podLabels | nindent 14 }}
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+---
+# WordPress: in from the ingress controller (shoppers, admins) and from woo-mcp (REST API);
+# out only to MariaDB. The bootstrap init container is part of this pod, so it gets the same rules.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-wordpress
+  labels:
+    {{- include "woo-store.labels" (dict "root" . "component" "network-policy") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- $wordpress | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        # Same list item = both must match: Traefik pods IN the kube-system namespace.
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $np.ingressController.namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml $np.ingressController.podLabels | nindent 14 }}
+        - podSelector:
+            matchLabels:
+              {{- $wooMcp | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 8080 }
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- $mariadb | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 3306 }
+---
+# MariaDB: in only from WordPress and the cron job. No egress beyond DNS.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-mariadb
+  labels:
+    {{- include "woo-store.labels" (dict "root" . "component" "network-policy") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- $mariadb | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- $wordpress | nindent 14 }}
+        - podSelector:
+            matchLabels:
+              {{- $cron | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 3306 }
+---
+# wp-cron: runs WP-CLI against the database; no ingress at all.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-wp-cron
+  labels:
+    {{- include "woo-store.labels" (dict "root" . "component" "network-policy") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- $cron | nindent 6 }}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- $mariadb | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 3306 }
+---
+# woo-mcp: in only from gateway pods in the platform namespace; out only to WordPress.
+# Rendered even with wooMcp.enabled=false (it then selects no pods), so the store's firewall is the
+# same whether woo-mcp comes from this chart or is deployed separately with the same labels.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-woo-mcp
+  labels:
+    {{- include "woo-store.labels" (dict "root" . "component" "network-policy") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- $wooMcp | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        # One list item with both selectors = namespace "platform" AND label component=gateway.
+        # (Two separate items would mean OR: any pod in platform, or any gateway pod anywhere.)
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.wooMcp.allowFrom.namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.wooMcp.allowFrom.podLabels | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 8080 }
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- $wordpress | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 8080 }
+{{- end }}

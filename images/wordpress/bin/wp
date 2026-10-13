@@ -1,0 +1,6 @@
+#!/bin/sh
+# WP-CLI wrapper. WooCommerce-heavy CLI commands can exceed the 256M web memory_limit, so CLI runs
+# get 512M. The cache dir points at /tmp because the image filesystem is read-only for uid 33.
+: "${WP_CLI_CACHE_DIR:=/tmp/wp-cli-cache}"
+export WP_CLI_CACHE_DIR
+exec php -d memory_limit=512M /usr/local/lib/wp-cli/wp-cli.phar "$@"

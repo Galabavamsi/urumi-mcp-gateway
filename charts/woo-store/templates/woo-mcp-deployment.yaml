@@ -1,0 +1,90 @@
+{{- if .Values.wooMcp.enabled }}
+# woo-mcp: our MCP server for this store (apps/woo-mcp). Not exposed by any Ingress; only gateway
+# pods may call it (NetworkPolicy + a bearer token), and it calls WooCommerce's REST API over the
+# in-cluster Service with OAuth 1.0a-signed requests as the mcp-bot user.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: woo-mcp
+  labels:
+    {{- include "woo-store.labels" (dict "root" . "component" "woo-mcp") | nindent 4 }}
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      {{- include "woo-store.selectorLabels" (dict "root" . "component" "woo-mcp") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "woo-store.podLabels" (dict "root" . "component" "woo-mcp") | nindent 8 }}
+    spec:
+      enableServiceLinks: false
+      automountServiceAccountToken: false
+      securityContext:
+        # The node image's unprivileged "node" user.
+        {{- include "woo-store.podSecurityContext" (dict "uid" 1000 "fsGroup" false) | nindent 8 }}
+      containers:
+        - name: woo-mcp
+          image: {{ include "woo-store.image" (dict "name" "wooMcp.image" "image" .Values.wooMcp.image) }}
+          imagePullPolicy: {{ .Values.wooMcp.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: MCP_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.mcpAuth }}
+                  key: token
+            # Where requests are SENT: the in-cluster Service (plain HTTP, never leaves the cluster).
+            - name: WOO_BASE_URL
+              value: {{ printf "http://wordpress.%s.svc.cluster.local:8080" .Release.Namespace | quote }}
+            # The store's public home URL (= WP_HOME). WooCommerce checks OAuth signatures against its
+            # home URL, not against the Host the request arrived on.
+            - name: WOO_HOME_URL
+              value: {{ include "woo-store.homeUrl" . | quote }}
+            - name: WOO_CONSUMER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.api }}
+                  key: consumer-key
+            - name: WOO_CONSUMER_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.api }}
+                  key: consumer-secret
+            - name: STORE_TZ
+              value: {{ .Values.store.timezone | quote }}
+            - name: WOO_TIMEOUT_MS
+              value: {{ .Values.wooMcp.timeoutMs | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.wooMcp.logLevel | quote }}
+          # /healthz = the process is up; /readyz = it can serve MCP requests.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.wooMcp.resources | nindent 12 }}
+          securityContext:
+            {{- include "woo-store.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            # Read-only root filesystem; Node may still want a temp dir.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+{{- end }}

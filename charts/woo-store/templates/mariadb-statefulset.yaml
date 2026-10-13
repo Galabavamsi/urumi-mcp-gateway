@@ -1,0 +1,119 @@
+{{- $image := include "woo-store.image" (dict "name" "mariadb.image" "image" .Values.mariadb.image) -}}
+# MariaDB on the official image. A StatefulSet (not a Deployment) so the data volume is created from
+# volumeClaimTemplates, stays bound to this pod identity, and survives `helm uninstall`.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mariadb
+  labels:
+    {{- include "woo-store.labels" (dict "root" . "component" "mariadb") | nindent 4 }}
+spec:
+  # Single replica, so per-pod DNS names are not needed; the regular ClusterIP Service is enough.
+  serviceName: mariadb
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      {{- include "woo-store.selectorLabels" (dict "root" . "component" "mariadb") | nindent 6 }}
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  template:
+    metadata:
+      labels:
+        {{- include "woo-store.podLabels" (dict "root" . "component" "mariadb") | nindent 8 }}
+    spec:
+      # Otherwise the "mariadb" Service injects MARIADB_PORT=tcp://... style variables, and the image's
+      # entrypoint reads MARIADB_* variables as configuration.
+      enableServiceLinks: false
+      automountServiceAccountToken: false
+      # Give InnoDB time to flush and shut down cleanly on SIGTERM.
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        # The image's own "mysql" user (999). Started as non-root, the entrypoint skips its chown/gosu
+        # step and runs mariadbd directly.
+        {{- include "woo-store.podSecurityContext" (dict "uid" 999 "fsGroup" true) | nindent 8 }}
+      containers:
+        - name: mariadb
+          image: {{ $image }}
+          imagePullPolicy: {{ .Values.mariadb.image.pullPolicy }}
+          # No reverse-DNS lookup per connection: faster, and grants use '%' anyway.
+          args: ["mariadbd", "--skip-name-resolve"]
+          env:
+            # Applied by the entrypoint only when the data directory is empty (first start).
+            - name: MARIADB_DATABASE
+              value: {{ .Values.mariadb.database | quote }}
+            - name: MARIADB_USER
+              value: {{ .Values.mariadb.user | quote }}
+            - name: MARIADB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.db }}
+                  key: password
+            - name: MARIADB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.db }}
+                  key: root-password
+            # After an image upgrade, run mariadb-upgrade on start (and recreate the healthcheck user
+            # if it is missing).
+            - name: MARIADB_AUTO_UPGRADE
+              value: "1"
+          ports:
+            - name: mysql
+              containerPort: 3306
+          # healthcheck.sh ships in the image and logs in as a USAGE-only "healthcheck" user whose
+          # credentials the entrypoint wrote to the data dir on first start.
+          #   --connect             the server accepts connections
+          #   --innodb_initialized  InnoDB finished crash recovery and is usable
+          startupProbe:
+            exec:
+              command: ["healthcheck.sh", "--connect", "--innodb_initialized"]
+            initialDelaySeconds: 10  # even a warm restart takes ~5-10 s; skip guaranteed (noisy) failures
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 60   # first start initialises the data dir: allow up to 5 minutes
+          readinessProbe:
+            exec:
+              command: ["healthcheck.sh", "--connect", "--innodb_initialized"]
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command: ["healthcheck.sh", "--connect"]
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            {{- toYaml .Values.mariadb.resources | nindent 12 }}
+          securityContext:
+            {{- include "woo-store.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+            # Read-only root filesystem: the socket/pid dir and temp files get their own volumes.
+            - name: run
+              mountPath: /run/mysqld
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: run
+          emptyDir:
+            sizeLimit: 1Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 512Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "woo-store.labels" (dict "root" . "component" "mariadb") | nindent 10 }}
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with .Values.mariadb.persistence.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.mariadb.persistence.size }}

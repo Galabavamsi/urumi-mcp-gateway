@@ -1,0 +1,16 @@
+# Reached by Traefik (through the Ingress) and by woo-mcp at
+# http://wordpress.<namespace>.svc.cluster.local:8080 (NetworkPolicy allows nothing else).
+apiVersion: v1
+kind: Service
+metadata:
+  name: wordpress
+  labels:
+    {{- include "woo-store.labels" (dict "root" . "component" "wordpress") | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "woo-store.selectorLabels" (dict "root" . "component" "wordpress") | nindent 4 }}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

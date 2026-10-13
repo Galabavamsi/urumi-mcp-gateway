@@ -1,0 +1,15 @@
+# Reached only by WordPress and the wp-cron job (enforced by NetworkPolicy).
+apiVersion: v1
+kind: Service
+metadata:
+  name: mariadb
+  labels:
+    {{- include "woo-store.labels" (dict "root" . "component" "mariadb") | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "woo-store.selectorLabels" (dict "root" . "component" "mariadb") | nindent 4 }}
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: mysql

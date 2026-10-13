@@ -1,0 +1,46 @@
+{{- $home := include "woo-store.homeUrl" . -}}
+{{- $envType := .Values.wordpress.environmentType -}}
+{{- if not (has $envType (list "local" "development" "staging" "production")) -}}
+{{- fail "wordpress.environmentType must be one of local, development, staging, production" -}}
+{{- end -}}
+# Non-secret settings shared (via envFrom) by the bootstrap initContainer, Apache and the cron job,
+# so all three load WordPress with exactly the same configuration.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: wordpress-env
+  labels:
+    {{- include "woo-store.labels" (dict "root" . "component" "wordpress") | nindent 4 }}
+data:
+  # Read by the image's wp-config.php (wp-config-docker.php from the official image).
+  WORDPRESS_DB_HOST: "mariadb:3306"
+  WORDPRESS_DB_NAME: {{ .Values.mariadb.database | quote }}
+  WORDPRESS_DB_USER: {{ .Values.mariadb.user | quote }}
+  # Evaluated as PHP by wp-config.php.
+  WORDPRESS_CONFIG_EXTRA: |
+    // Rendered by the woo-store Helm chart.
+    define( 'WP_HOME', {{ $home | squote }} );
+    define( 'WP_SITEURL', {{ $home | squote }} );
+    define( 'WP_ENVIRONMENT_TYPE', {{ $envType | squote }} );
+    // Background work (WP-Cron, Action Scheduler) runs from the wp-cron CronJob, not on page views.
+    define( 'DISABLE_WP_CRON', true );
+    // Code is baked into the image: no plugin/theme installs, updates or file editor in wp-admin.
+    define( 'DISALLOW_FILE_MODS', true );
+    define( 'DISALLOW_FILE_EDIT', true );
+    define( 'AUTOMATIC_UPDATER_DISABLED', true );
+    // Egress is denied by NetworkPolicy: fail outbound HTTP calls instantly instead of letting
+    // wp-admin pages hang until the connection times out.
+    define( 'WP_HTTP_BLOCK_EXTERNAL', true );
+  # Read by the bootstrap (urumi-bootstrap.sh / configure-store.php).
+  WP_HOME: {{ $home | quote }}
+  WP_ADMIN_USER: {{ .Values.store.adminUser | quote }}
+  WP_ADMIN_EMAIL: {{ .Values.store.adminEmail | quote }}
+  DB_WAIT_TIMEOUT_SECONDS: {{ .Values.wordpress.bootstrap.dbWaitTimeoutSeconds | quote }}
+  STORE_NAME: {{ .Values.store.name | quote }}
+  STORE_COUNTRY: {{ .Values.store.country | quote }}
+  STORE_ADDRESS: {{ .Values.store.address | quote }}
+  STORE_CITY: {{ .Values.store.city | quote }}
+  STORE_POSTCODE: {{ .Values.store.postcode | quote }}
+  STORE_CURRENCY: {{ .Values.store.currency | quote }}
+  STORE_TIMEZONE: {{ .Values.store.timezone | quote }}
+  STORE_SEED_PRODUCTS: {{ .Values.store.seedProducts | toJson | quote }}

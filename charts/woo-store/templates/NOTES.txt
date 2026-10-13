@@ -1,0 +1,27 @@
+{{- $home := include "woo-store.homeUrl" . -}}
+{{ .Values.store.name }} is installed in namespace {{ .Release.Namespace }}.
+
+  Storefront:  {{ $home }}/
+  Shop:        {{ $home }}/shop/
+  Admin:       {{ $home }}/wp-admin/   (user: {{ .Values.store.adminUser }})
+
+The admin password lives in the Secret {{ .Values.secrets.wordpress }} (created by scripts/secrets.sh):
+
+  kubectl -n {{ .Release.Namespace }} get secret {{ .Values.secrets.wordpress }} -o jsonpath='{.data.admin-password}' | base64 -d; echo
+
+The first start installs and configures the store (about a minute). Follow it with:
+
+  kubectl -n {{ .Release.Namespace }} logs deploy/wordpress -c bootstrap -f
+
+{{- if .Values.wooMcp.enabled }}
+
+woo-mcp (MCP endpoint for the gateway, not public):
+  http://woo-mcp.{{ .Release.Namespace }}.svc.cluster.local:8080/mcp
+  Only pods in namespace "{{ .Values.wooMcp.allowFrom.namespace }}" labelled {{ toJson .Values.wooMcp.allowFrom.podLabels }} may connect.
+{{- else }}
+
+woo-mcp is disabled (wooMcp.enabled=false).
+{{- end }}
+
+Secrets were not created by this chart. After rotating one, restart the pods that read it:
+  kubectl -n {{ .Release.Namespace }} rollout restart deploy/wordpress{{ if .Values.wooMcp.enabled }} deploy/woo-mcp{{ end }}
