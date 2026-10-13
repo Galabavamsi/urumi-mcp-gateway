@@ -1,0 +1,71 @@
+{{- if .Values.dashboard.enabled }}
+{{- $dash := .Values.dashboard -}}
+# The dashboard (apps/dashboard): the built React SPA served by nginx-unprivileged on :8080. It holds no
+# secrets and calls nothing itself: the browser talks to /api on the same host.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dashboard
+  labels:
+    {{- include "platform.labels" (dict "root" . "component" "dashboard") | nindent 4 }}
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      {{- include "platform.selectorLabels" (dict "root" . "component" "dashboard") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "platform.podLabels" (dict "root" . "component" "dashboard") | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        # nginx-unprivileged's "nginx" user.
+        {{- include "platform.podSecurityContext" (dict "uid" 101 "fsGroup" false) | nindent 8 }}
+      containers:
+        - name: dashboard
+          image: {{ include "platform.image" (dict "name" "dashboard.image" "image" $dash.image) }}
+          imagePullPolicy: {{ $dash.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          # /healthz is a static 200 in the image's nginx config: nginx is up and serving.
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            {{- toYaml $dash.resources | nindent 12 }}
+          securityContext:
+            {{- include "platform.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            # Read-only root filesystem: nginx-unprivileged keeps its pid file and request temp files in
+            # /tmp and its proxy/fastcgi caches in /var/cache/nginx.
+            - name: tmp
+              mountPath: /tmp
+            - name: cache
+              mountPath: /var/cache/nginx
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 32Mi
+        - name: cache
+          emptyDir:
+            sizeLimit: 32Mi
+{{- end }}

@@ -1,0 +1,123 @@
+{{- $pg := .Values.postgres -}}
+# Postgres on the official image: the gateway's state (users, API keys, servers, audit log). A StatefulSet
+# (not a Deployment) so the data volume is created from volumeClaimTemplates, stays bound to this pod
+# identity, and survives `helm uninstall`.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  labels:
+    {{- include "platform.labels" (dict "root" . "component" "postgres") | nindent 4 }}
+spec:
+  # Single replica, so per-pod DNS names are not needed; the regular ClusterIP Service is enough.
+  serviceName: postgres
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      {{- include "platform.selectorLabels" (dict "root" . "component" "postgres") | nindent 6 }}
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  template:
+    metadata:
+      labels:
+        {{- include "platform.podLabels" (dict "root" . "component" "postgres") | nindent 8 }}
+    spec:
+      # Otherwise the "postgres" Service injects POSTGRES_PORT=tcp://... style variables next to the
+      # image's real POSTGRES_* settings.
+      enableServiceLinks: false
+      automountServiceAccountToken: false
+      # Room for the preStop "fast" shutdown below: roll back open transactions, checkpoint, exit.
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        # The image's own "postgres" user (999 in the Debian image). Started as non-root, the
+        # entrypoint skips its chown/gosu step and runs postgres directly.
+        {{- include "platform.podSecurityContext" (dict "uid" 999 "fsGroup" true) | nindent 8 }}
+      containers:
+        - name: postgres
+          image: {{ include "platform.image" (dict "name" "postgres.image" "image" $pg.image) }}
+          imagePullPolicy: {{ $pg.image.pullPolicy }}
+          env:
+            # Applied by the entrypoint only when the data directory is empty (first start). Changing
+            # the Secret later does NOT change the password inside the database (see the README).
+            - name: POSTGRES_USER
+              value: {{ $pg.user | quote }}
+            - name: POSTGRES_DB
+              value: {{ $pg.database | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.postgres }}
+                  key: password
+          ports:
+            - name: postgres
+              containerPort: 5432
+          # pg_isready over TCP, the way the gateway connects. During first-start initialisation the
+          # entrypoint runs a temporary socket-only server, so the pod is (correctly) not ready until the
+          # real server listens. -U/-d name a role that exists: without them pg_isready uses the OS user
+          # "postgres", a role this database does not have, and the server would log an error per probe.
+          startupProbe:
+            exec:
+              command: ["pg_isready", "--host=127.0.0.1", "--port=5432", "--username={{ $pg.user }}", "--dbname={{ $pg.database }}"]
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 60   # first start runs initdb: allow up to 5 minutes
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "--host=127.0.0.1", "--port=5432", "--username={{ $pg.user }}", "--dbname={{ $pg.database }}"]
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "--host=127.0.0.1", "--port=5432", "--username={{ $pg.user }}", "--dbname={{ $pg.database }}"]
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          lifecycle:
+            # Kubernetes stops containers with SIGTERM, which Postgres treats as a "smart" shutdown: it
+            # waits for every client to disconnect, and the gateway's connection pool never does, so the
+            # pod would sit out the grace period and be SIGKILLed (crash recovery on the next start).
+            # A "fast" shutdown instead: open transactions roll back, a checkpoint is written, it exits.
+            # pg_ctl finds the data directory through the image's PGDATA variable. --no-wait returns as
+            # soon as the request is sent: waiting would end with the container itself (the hook's process
+            # dies with it and the kubelet reports a false "hook failed"). The SIGTERM that follows cannot
+            # downgrade a fast shutdown back to smart; the grace period covers the checkpoint.
+            preStop:
+              exec:
+                command: ["pg_ctl", "stop", "--mode=fast", "--no-wait"]
+          resources:
+            {{- toYaml $pg.resources | nindent 12 }}
+          securityContext:
+            {{- include "platform.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            # Postgres 18 images keep PGDATA at /var/lib/postgresql/18/docker, so the volume goes on the
+            # parent directory (mounting it at .../data, as with older images, makes the container exit).
+            - name: data
+              mountPath: /var/lib/postgresql
+            # Read-only root filesystem: the socket/lock dir and temp files get their own volumes.
+            - name: run
+              mountPath: /var/run/postgresql
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: run
+          emptyDir:
+            sizeLimit: 1Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "platform.labels" (dict "root" . "component" "postgres") | nindent 10 }}
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with $pg.persistence.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ $pg.persistence.size }}

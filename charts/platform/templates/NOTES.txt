@@ -1,0 +1,33 @@
+{{- $base := include "platform.publicBaseUrl" . -}}
+{{- $ns := .Release.Namespace -}}
+The Urumi platform is installed in namespace {{ $ns }}.
+{{- if .Values.dashboard.enabled }}
+
+  Dashboard:   {{ $base }}/
+{{- end }}
+{{- if .Values.gateway.enabled }}
+  MCP URL:     {{ $base }}/mcp   (header "Authorization: Bearer <API key created in the dashboard>")
+  REST API:    {{ $base }}/api
+  Metrics:     http://gateway-metrics.{{ $ns }}.svc.cluster.local:9091/metrics   (in-cluster only, never on the Ingress)
+
+The first admin is the email + password in Secret {{ .Values.secrets.bootstrapAdmin }} (scripts/secrets.sh copies them
+from .env). The gateway creates that user only while its users table is empty. To see the email:
+
+  kubectl -n {{ $ns }} get secret {{ .Values.secrets.bootstrapAdmin }} -o jsonpath='{.data.email}' | base64 -d; echo
+
+Follow the gateway's startup (migrations, seeded upstreams, missing optional keys):
+
+  kubectl -n {{ $ns }} logs deploy/gateway -f
+{{- else }}
+
+The gateway is disabled (gateway.enabled=false): no /api or /mcp routes.
+{{- end }}
+{{- if not .Values.dashboard.enabled }}
+The dashboard is disabled (dashboard.enabled=false).
+{{- end }}
+
+Postgres: postgres.{{ $ns }}.svc.cluster.local:5432, reachable only from pods labelled
+app.kubernetes.io/component=gateway in this namespace. Its volume (PVC data-postgres-0) is kept on uninstall.
+
+Secrets were not created by this chart. After rotating one, restart the pods that read it:
+  kubectl -n {{ $ns }} rollout restart deploy/gateway

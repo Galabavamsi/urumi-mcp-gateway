@@ -1,0 +1,42 @@
+# Production: k3s on the EC2 VPS. Images come from GHCR and are tagged with the git SHA, so the
+# tags are set at deploy time (the templates refuse to render without them):
+#   helm upgrade --install platform charts/platform -n platform -f charts/platform/values-prod.yaml \
+#     --set-string gateway.image.tag=<sha> --set-string dashboard.image.tag=<sha> \
+#     --wait --timeout 10m --rollback-on-failure
+
+# Uncomment if the GHCR packages are private (Secret ghcr-pull, see docs/CONTRACTS.md).
+# imagePullSecrets:
+#   - name: ghcr-pull
+
+ingress:
+  host: app.urumi.humanslop.in
+  annotations:
+    # cert-manager watches this annotation and issues a Let's Encrypt certificate into the Secret
+    # named in tls.secretName (HTTP-01 challenge through Traefik).
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  tls:
+    enabled: true
+    secretName: platform-tls
+
+gateway:
+  image:
+    repository: ghcr.io/galabavamsi/gateway
+    tag: ""                        # set with --set-string gateway.image.tag=<git-sha>
+  publicBaseUrl: https://app.urumi.humanslop.in
+  cookieSecure: true
+
+dashboard:
+  image:
+    repository: ghcr.io/galabavamsi/dashboard
+    tag: ""                        # set with --set-string dashboard.image.tag=<git-sha>
+
+postgres:
+  persistence:
+    size: 5Gi
+    storageClass: local-path       # k3s local-path on the EBS root volume (DeleteOnTermination=false)
+
+# Prometheus is not installed yet. When it is, open the metrics port to it only:
+# networkPolicy:
+#   metricsFrom:
+#     - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+#       podSelector: { matchLabels: { app.kubernetes.io/name: prometheus } }

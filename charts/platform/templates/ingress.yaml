@@ -1,0 +1,48 @@
+{{- if and .Values.ingress.enabled (or .Values.gateway.enabled .Values.dashboard.enabled) }}
+# The platform's only public entry point. One host, so the SPA and its API share an origin.
+#   <host>/api  -> gateway:8080     <host>/mcp -> gateway:8080     <host>/ -> dashboard:8080
+# Prefix matching is per path segment: /api matches /api and /api/servers, not /apix. Longer paths win,
+# so /api and /mcp never fall through to the dashboard. Nothing routes to the metrics port.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: app
+  labels:
+    {{- include "platform.labels" (dict "root" . "component" "ingress") | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host | quote }}
+      secretName: {{ .Values.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+    - host: {{ required "ingress.host is required" .Values.ingress.host | quote }}
+      http:
+        paths:
+          {{- if .Values.gateway.enabled }}
+          {{- range list "/api" "/mcp" }}
+          - path: {{ . }}
+            pathType: Prefix
+            backend:
+              service:
+                name: gateway
+                port:
+                  name: http
+          {{- end }}
+          {{- end }}
+          {{- if .Values.dashboard.enabled }}
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: dashboard
+                port:
+                  name: http
+          {{- end }}
+{{- end }}

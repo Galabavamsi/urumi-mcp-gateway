@@ -1,0 +1,164 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $np := .Values.networkPolicy -}}
+{{- $release := dict "app.kubernetes.io/instance" .Release.Name -}}
+{{- $gateway := include "platform.selectorLabels" (dict "root" . "component" "gateway") -}}
+{{- $dashboard := include "platform.selectorLabels" (dict "root" . "component" "dashboard") -}}
+{{- $postgres := include "platform.selectorLabels" (dict "root" . "component" "postgres") -}}
+# The platform's firewall. NetworkPolicies are allow-lists that add up: the first policy denies all
+# traffic in and out of every pod of this release, and each policy after it opens one path.
+#
+#   Traefik (kube-system) --8080--> gateway, dashboard
+#   gateway --5432--> postgres
+#   gateway --8080--> woo-mcp (store), supplier-mcp (mcp-upstreams)
+#   gateway --443---> public internet (Anthropic, Firecrawl, AgentMail), never private ranges
+#   every pod --53--> kube-dns
+#   (metrics :9091 stays closed unless networkPolicy.metricsFrom names a scraper)
+#
+# Kubelet probes come from the node and are always allowed. Policies select pods by label, so a pod is
+# only covered once it carries this release's labels (kube-router takes a few seconds to see brand-new
+# pods). All policies render even when gateway/dashboard are disabled: they then select no pods.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-default-deny
+  labels:
+    {{- include "platform.labels" (dict "root" . "component" "network-policy") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- toYaml $release | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+---
+# DNS: every pod may resolve names (Service names, public API hosts) through CoreDNS.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-allow-dns
+  labels:
+    {{- include "platform.labels" (dict "root" . "component" "network-policy") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- toYaml $release | nindent 6 }}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $np.dns.namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml $np.dns.podLabels | nindent 14 }}
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+---
+# Gateway: in from the ingress controller (browsers, MCP clients); out to its database, the in-cluster
+# MCP servers and public HTTPS. Nothing else, so a compromised gateway cannot scan the cluster or reach
+# the cloud metadata endpoint.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-gateway
+  labels:
+    {{- include "platform.labels" (dict "root" . "component" "network-policy") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- $gateway | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        # Same list item = both must match: Traefik pods IN the kube-system namespace.
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $np.ingressController.namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml $np.ingressController.podLabels | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 8080 }
+    {{- with $np.metricsFrom }}
+    # Metrics scrapers named in networkPolicy.metricsFrom, on the metrics port only.
+    - from:
+        {{- toYaml . | nindent 8 }}
+      ports:
+        - { protocol: TCP, port: 9091 }
+    {{- end }}
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- $postgres | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 5432 }
+    {{- range $np.upstreams }}
+    # In-cluster MCP server: pods labelled {{ toJson .podLabels }} in namespace {{ .namespace }}.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .podLabels | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: {{ .port }} }
+    {{- end }}
+    {{- if $np.internetEgress.enabled }}
+    # Public internet only: the except list removes private, CGNAT, link-local (cloud metadata) and
+    # loopback ranges, which also covers every pod and Service IP of the cluster.
+    - to:
+        - ipBlock:
+            cidr: {{ $np.internetEgress.cidr }}
+            except:
+              {{- toYaml $np.internetEgress.except | nindent 14 }}
+      ports:
+        {{- range $np.internetEgress.ports }}
+        - { protocol: TCP, port: {{ . }} }
+        {{- end }}
+    {{- end }}
+---
+# Dashboard: in only from the ingress controller. No egress beyond DNS (it serves static files).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-dashboard
+  labels:
+    {{- include "platform.labels" (dict "root" . "component" "network-policy") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- $dashboard | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $np.ingressController.namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml $np.ingressController.podLabels | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 8080 }
+---
+# Postgres: in only from pods with the gateway's network identity in this namespace. No egress beyond DNS.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-postgres
+  labels:
+    {{- include "platform.labels" (dict "root" . "component" "network-policy") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- $postgres | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        # A podSelector without a namespaceSelector means "pods in this namespace".
+        - podSelector:
+            matchLabels:
+              {{- include "platform.gatewayIdentityLabels" . | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 5432 }
+{{- end }}
