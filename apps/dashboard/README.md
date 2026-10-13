@@ -1,7 +1,8 @@
 # Dashboard
 
 React SPA for admins and members of the Urumi MCP gateway: servers, members and invites, API keys,
-audit log, chat with the store agent, and member tool policies. It talks only to the gateway REST API
+audit log, chat with the store agent, member tool policies, and (admins) live per-server observability. It talks
+only to the gateway REST API
 described in [`docs/API.md`](../../docs/API.md), on the same origin.
 
 ## Run it

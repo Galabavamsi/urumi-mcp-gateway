@@ -71,6 +71,42 @@ Denied tools are **hidden from `tools/list`** for that user and **rejected** on 
 
 Argument values are never stored (only a SHA-256 `argsHash`, not returned by the API). A call refused by the rate limit (see MCP endpoint) is a `denied` row whose `error` starts with `rate limited`.
 
+## Observability (stand-out: metrics per server, reasons for failures)
+| Method & path | Who | Response |
+|---|---|---|
+| `GET /api/stats` | admin (members 403 `forbidden`) | `{generatedAt, startedAt, windowMinutes: 15, servers: [serverStats]}`, servers in registration order (like `/api/servers`) |
+
+```
+serverStats = {slug, name, enabled, status, statusReason, protocolEra, lastCheckedAt, lastOkAt,
+  transitions: [{at, from: status|null, to: status, reason: string|null, protocolEra: 'modern'|'legacy'|null}],
+  window:     {calls, errors: {error, timeout, unreachable, denied}, errorRate, p50Ms, p95Ms,
+               perMinute: [{start, calls, failed}]},
+  sinceStart: {calls, errors: {error, timeout, unreachable, denied}, errorRate, p50Ms, p95Ms},
+  topTools:   [{tool, calls, errors}],
+  lastError:  {at, tool, status: 'error'|'timeout'|'unreachable'|'denied', message} | null}
+```
+- **Fed by** the `callTool()` choke point (every call, refused ones included) and the upstream manager (every status change).
+  `status`, `statusReason`, `protocolEra` and the timestamps are the live values that `/api/servers` shows.
+- **`window`** = the current minute plus the 14 before it (1-minute buckets); `perMinute` has 15 entries, oldest first, zeros
+  included. **`sinceStart`** = since `startedAt`, when this gateway process started counting.
+- **`calls`** counts every call addressed to the server. **`errors`** counts the calls that did not end `ok`, by audit status.
+  **`errorRate`** = (error + timeout + unreachable) / (calls − denied), 0..1, `null` when nothing was tried: a call the gateway
+  denied (tool policy, rate limit, disabled server) never reached the server, so it says nothing about its health.
+  `perMinute[].failed` = error + timeout + unreachable. `topTools` (at most 5, since start, by calls; `tool` is the name on its
+  server) counts `errors` the same way as `errors` above, denied included.
+- **`p50Ms` / `p95Ms`** are estimates from a fixed-bucket histogram (5 ms … 120 s, about 1.5× per step; linear interpolation
+  inside the bucket, clamped to the smallest and largest duration seen), `null` without samples. Only `ok`, `error` and
+  `timeout` calls are timed; fail-fast `unreachable` and `denied` calls never reached the server and would flatter the numbers.
+- **`transitions`**: newest first, at most 20. A new entry for every change of status **or** reason (`unreachable: connection
+  refused` → `unreachable: timed out after 3s` is one); a repeat of the latest state adds nothing. `reason` is the unreachable
+  reason, or what (re)started supervision: `gateway started`, `added or edited by an admin`, `disabled by an admin`.
+- **`lastError.message`** is the gateway's own reason (`connection refused`, `timed out after 10s`, `upstream answered HTTP 502`,
+  `not permitted for role member`, `rate limited: …`). When a tool itself answered with `isError`, the message is a fixed
+  text instead of the tool's words, which can repeat the caller's arguments (the audit log keeps them).
+- **In memory, per process**: the numbers start from zero when the gateway restarts, and with more than one replica each would
+  count only its own calls (we run one). Long-term numbers belong to Prometheus: `gateway-metrics` Service, port 9091,
+  `/metrics`, in-cluster only (`gateway_tool_calls_total`, `gateway_tool_call_duration_seconds`, `gateway_upstream_up`).
+
 ## Misc
 | `GET /api/config` | user | → `{mcpUrl, storeUrl, model, storeTz}` |
 |---|---|---|

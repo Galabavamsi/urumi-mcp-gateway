@@ -2,13 +2,14 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Plus } from 'lucide-react';
 import { useState } from 'react';
 import { deleteServer } from '../../api/endpoints';
-import { queryKeys, SERVER_POLL_MS, useServers } from '../../api/queries';
+import { queryKeys, SERVER_POLL_MS, useServers, useStats } from '../../api/queries';
 import type { UpstreamServer } from '../../api/types';
 import { useCurrentUser } from '../../auth/session';
 import { PageHeader } from '../../components/Controls';
 import { EmptyState, ErrorNote, Loading } from '../../components/Feedback';
 import { ConfirmDialog } from '../../components/Modal';
 import { formatRelative } from '../../lib/format';
+import { statusSince } from '../observability/statsView';
 import { ServerFormModal } from './ServerFormModal';
 import { ServerRow } from './ServerRow';
 
@@ -17,6 +18,8 @@ export function ServersPage() {
   const isAdmin = user.role === 'admin';
   // Polls every few seconds so a killed upstream pod shows as Unreachable without reloading the page.
   const servers = useServers({ poll: true });
+  // Admins also get each server's status history, to say since when it is unreachable (members may not read it).
+  const stats = useStats({ enabled: isAdmin });
   const queryClient = useQueryClient();
 
   const [editing, setEditing] = useState<UpstreamServer | 'new' | null>(null);
@@ -82,6 +85,7 @@ export function ServersPage() {
               key={server.id}
               server={server}
               isAdmin={isAdmin}
+              statusSince={statusSince(stats.data?.servers.find((s) => s.slug === server.slug)?.transitions ?? [], server.status)}
               onEdit={() => setEditing(server)}
               onDelete={() => setDeleting(server)}
             />

@@ -14,6 +14,7 @@ import { errorForLog } from '../db/errors.ts';
 import { upstreamServers, type CachedTool, type ToolHashes, type UpstreamServerRow } from '../db/schema.ts';
 import type { GatewayMetrics } from '../metrics.ts';
 import { isAllowlistedHost, type FetchLike } from '../security/ssrf.ts';
+import type { StatsCollector } from '../stats/collector.ts';
 import { classifyUpstreamError, isConnectionLevel } from './errors.ts';
 import { CONNECT_TIMEOUT_MS, UpstreamClient, type ProtocolEra } from './upstreamClient.ts';
 
@@ -67,6 +68,8 @@ export interface UpstreamManagerOptions {
   /** Health interval for external servers: slower, because every check costs the third party a request. */
   externalHealthIntervalMs?: number;
   metrics: GatewayMetrics;
+  /** Receives every status change for the dashboard's transition history (optional: unit tests leave it out). */
+  stats?: StatsCollector;
 }
 
 export const HEALTH_TIMEOUT_MS = 3_000;
@@ -85,7 +88,7 @@ export class UpstreamManager {
 
   async start(): Promise<void> {
     const rows = await this.opts.db.select().from(upstreamServers).where(isNull(upstreamServers.deletedAt));
-    for (const row of rows) this.supervise(row);
+    for (const row of rows) this.supervise(row, 'gateway started');
     this.emitCatalogChange();
   }
 
@@ -94,7 +97,7 @@ export class UpstreamManager {
     const [row] = await this.opts.db.select().from(upstreamServers).where(eq(upstreamServers.id, serverId));
     // Calls already running on the old connection may finish: it is closed only after their timeout.
     await this.retire(serverId, this.servers.get(serverId)?.row.timeoutMs ?? 0);
-    if (row && !row.deletedAt) this.supervise(row);
+    if (row && !row.deletedAt) this.supervise(row, 'added or edited by an admin');
     else if (row) this.opts.metrics.upstreamUp.remove({ server: row.slug });
     this.emitCatalogChange();
   }
@@ -182,7 +185,8 @@ export class UpstreamManager {
 
   // --- supervision -------------------------------------------------------------------------------------------
 
-  private supervise(row: UpstreamServerRow): void {
+  /** `cause` is recorded as the reason of the first status change ('gateway started', ...). */
+  private supervise(row: UpstreamServerRow, cause: string): void {
     const s: Supervised = {
       row,
       client: null,
@@ -201,6 +205,7 @@ export class UpstreamManager {
     };
     this.servers.set(row.id, s);
     this.opts.metrics.upstreamUp.set({ server: row.slug }, 0);
+    this.opts.stats?.recordStatus(row.slug, s.state.status, row.enabled ? cause : 'disabled by an admin', null);
     if (!row.enabled) {
       this.persistStatus(s);
       return;
@@ -337,6 +342,7 @@ export class UpstreamManager {
     if (status === 'connected') s.state.protocolEra = era;
     this.opts.metrics.upstreamUp.set({ server: s.row.slug }, status === 'connected' ? 1 : 0);
     if (!changed) return;
+    this.opts.stats?.recordStatus(s.row.slug, status, reason, status === 'connected' ? era : null);
     log(status === 'unreachable' ? 'warn' : 'info', 'upstream status changed', {
       server: s.row.slug,
       status,
