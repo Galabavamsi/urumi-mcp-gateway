@@ -1,0 +1,136 @@
+{{- $image := include "woo-store.image" (dict "name" "wordpress.image" "image" .Values.wordpress.image) -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wordpress
+  labels:
+    {{- include "woo-store.labels" (dict "root" . "component" "wordpress") | nindent 4 }}
+spec:
+  replicas: 1
+  # Recreate, not RollingUpdate: the uploads volume is ReadWriteOnce and the bootstrap should not
+  # change the database while an old pod is still serving. Costs a few seconds of downtime per rollout.
+  strategy:
+    type: Recreate
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      {{- include "woo-store.selectorLabels" (dict "root" . "component" "wordpress") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "woo-store.podLabels" (dict "root" . "component" "wordpress") | nindent 8 }}
+      annotations:
+        # Roll the pod (and so re-run the bootstrap) whenever the rendered settings change.
+        checksum/config: {{ include (print $.Template.BasePath "/wordpress-configmap.yaml") . | sha256sum }}
+    spec:
+      # Without this, the Services named "wordpress" and "mariadb" inject WORDPRESS_PORT=tcp://...
+      # style variables into the pod, colliding with the WORDPRESS_* settings wp-config.php reads.
+      enableServiceLinks: false
+      # WordPress never talks to the Kubernetes API, so it gets no token to steal.
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "woo-store.podSecurityContext" (dict "uid" 33 "fsGroup" true) | nindent 8 }}
+      initContainers:
+        # Idempotent store setup (see images/wordpress/bin/urumi-bootstrap.sh). Kubernetes does not
+        # allow probes on regular init containers: success is exit code 0, and on failure the kubelet
+        # restarts it with back-off, so the web container never starts against a half-built store.
+        - name: bootstrap
+          image: {{ $image }}
+          imagePullPolicy: {{ .Values.wordpress.image.pullPolicy }}
+          command: ["urumi-bootstrap.sh"]
+          envFrom:
+            - configMapRef:
+                name: wordpress-env
+          env:
+            {{- include "woo-store.wordpressSecretEnv" . | nindent 12 }}
+            # Only the bootstrap needs these two: the web container never sees them.
+            - name: WP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.wordpress }}
+                  key: admin-password
+            - name: WOO_CONSUMER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.api }}
+                  key: consumer-key
+            - name: WOO_CONSUMER_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.api }}
+                  key: consumer-secret
+          resources:
+            {{- toYaml .Values.wordpress.bootstrap.resources | nindent 12 }}
+          securityContext:
+            {{- include "woo-store.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            # WooCommerce's installer creates its log and download-protection folders in uploads.
+            - name: uploads
+              mountPath: /var/www/html/wp-content/uploads
+            - name: tmp
+              mountPath: /tmp
+      containers:
+        - name: wordpress
+          image: {{ $image }}
+          imagePullPolicy: {{ .Values.wordpress.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: wordpress-env
+          env:
+            {{- include "woo-store.wordpressSecretEnv" . | nindent 12 }}
+          # /wp-login.php boots WordPress and queries the database (a DB outage returns 500), never
+          # redirects, and is cheap. Startup gives the first, cold-cache requests time; after that
+          # readiness takes the pod out of the Service while WordPress cannot serve.
+          startupProbe:
+            httpGet:
+              path: /wp-login.php
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 24
+          readinessProbe:
+            httpGet:
+              path: /wp-login.php
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # Liveness only asks "is Apache accepting connections". It deliberately does not depend on
+          # the database, so a MariaDB restart does not cascade into WordPress restarts.
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.wordpress.resources | nindent 12 }}
+          securityContext:
+            {{- include "woo-store.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - name: uploads
+              mountPath: /var/www/html/wp-content/uploads
+            # The root filesystem is read-only; these are the only other places Apache/PHP write:
+            # PHP sessions and upload temp files, Apache's pid file and its lock files.
+            - name: tmp
+              mountPath: /tmp
+            - name: apache-run
+              mountPath: /var/run/apache2
+            - name: apache-lock
+              mountPath: /var/lock/apache2
+      volumes:
+        - name: uploads
+          persistentVolumeClaim:
+            claimName: wordpress-uploads
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+        - name: apache-run
+          emptyDir:
+            sizeLimit: 1Mi
+        - name: apache-lock
+          emptyDir:
+            sizeLimit: 1Mi

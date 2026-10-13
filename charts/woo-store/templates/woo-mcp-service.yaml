@@ -1,0 +1,17 @@
+{{- if .Values.wooMcp.enabled }}
+# ClusterIP only: POST /mcp, GET /healthz, GET /readyz. Reachable from gateway pods only.
+apiVersion: v1
+kind: Service
+metadata:
+  name: woo-mcp
+  labels:
+    {{- include "woo-store.labels" (dict "root" . "component" "woo-mcp") | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "woo-store.selectorLabels" (dict "root" . "component" "woo-mcp") | nindent 4 }}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+{{- end }}

@@ -1,0 +1,34 @@
+# Production: k3s on the EC2 VPS. Images come from GHCR and are tagged with the git SHA, so the
+# tags are set at deploy time (the templates refuse to render without them):
+#   helm upgrade --install woo-store charts/woo-store -n store -f charts/woo-store/values-prod.yaml \
+#     --set wordpress.image.tag=<sha> --set wooMcp.image.tag=<sha> \
+#     --wait --timeout 10m --rollback-on-failure
+
+ingress:
+  host: store.urumi.humanslop.in
+  annotations:
+    # cert-manager watches this annotation and issues a Let's Encrypt certificate into the Secret
+    # named in tls.secretName (HTTP-01 challenge through Traefik).
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  tls:
+    enabled: true                  # also makes WP_HOME https://...
+    secretName: woo-store-tls
+
+wordpress:
+  image:
+    repository: ghcr.io/galabavamsi/urumi-wordpress
+    tag: ""                        # set with --set wordpress.image.tag=<git-sha>
+  environmentType: production
+  persistence:
+    size: 5Gi
+    storageClass: local-path       # k3s local-path on the EBS root volume (DeleteOnTermination=false)
+
+mariadb:
+  persistence:
+    size: 10Gi
+    storageClass: local-path
+
+wooMcp:
+  image:
+    repository: ghcr.io/galabavamsi/urumi-woo-mcp
+    tag: ""                        # set with --set wooMcp.image.tag=<git-sha>

@@ -1,0 +1,42 @@
+# Local k3d cluster (inside WSL). Images are loaded with `k3d image import <img>:dev -c urumi`.
+#   helm upgrade --install woo-store charts/woo-store -n store -f charts/woo-store/values-local.yaml \
+#     --wait --timeout 10m --rollback-on-failure
+
+ingress:
+  host: store.127-0-0-1.sslip.io   # resolves to 127.0.0.1, where k3d maps Traefik's port 80
+  tls:
+    enabled: false
+
+wordpress:
+  image:
+    repository: urumi/wordpress
+    tag: dev
+  environmentType: local
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { cpu: "1", memory: 768Mi }
+  persistence:
+    size: 1Gi
+  bootstrap:
+    resources:
+      requests: { cpu: 50m, memory: 128Mi }
+      limits: { cpu: "1", memory: 640Mi }
+  cron:
+    resources:
+      requests: { cpu: 25m, memory: 96Mi }
+      limits: { cpu: 500m, memory: 640Mi }
+
+mariadb:
+  resources:
+    requests: { cpu: 50m, memory: 256Mi }
+    limits: { cpu: "1", memory: 768Mi }
+  persistence:
+    size: 1Gi
+
+wooMcp:
+  image:
+    repository: urumi/woo-mcp
+    tag: dev
+  resources:
+    requests: { cpu: 25m, memory: 64Mi }
+    limits: { cpu: 250m, memory: 192Mi }

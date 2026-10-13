@@ -1,0 +1,20 @@
+# wp-content/uploads: product images, WooCommerce logs and download files. The only persistent part
+# of WordPress; core, plugins and themes come from the image.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: wordpress-uploads
+  labels:
+    {{- include "woo-store.labels" (dict "root" . "component" "wordpress") | nindent 4 }}
+  annotations:
+    # `helm uninstall` keeps the uploads (like the MariaDB volume). Reinstalling the same release
+    # adopts this PVC again. Delete it by hand to really wipe the store.
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- with .Values.wordpress.persistence.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.wordpress.persistence.size }}
