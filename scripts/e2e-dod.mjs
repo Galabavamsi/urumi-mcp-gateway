@@ -22,7 +22,7 @@
 //   d11 A disables supplier -> B (listening) gets tools/list_changed and loses supplier__*, so does A's chat;
 //       calls are refused while disabled; re-enabled -> the tools come back
 //   d12 supplier scaled to 0 -> Unreachable with a reason within 12 s while woo keeps working; back to 1 ->
-//       connected within 20 s
+//       connected within 20 s; GET /api/stats (Observability page) shows the outage with its reason
 //   d13 supplier pod deleted -> replacement Ready, supplier connected and callable within 20 s
 //   d14 audit: every call above is in the log under the right user and channel (mcp / chat) with the right status
 //   z   cleanup: nothing this run created is left behind
@@ -925,8 +925,15 @@ async function main() {
     const upSeconds = (Date.now() - scaledAt) / 1000;
     assert(upSeconds <= 20, `connected only ${upSeconds.toFixed(1)} s after scaling back up`);
     await callOk(state.clientB2, 'supplier__list_products');
+    // The Observability page's data (GET /api/stats, admins only): the outage is in supplier's status history
+    // with its reason, and B's fail-fast call above is counted as unreachable.
+    const stats = (await A.ok('GET', '/stats')).servers.find((s) => s.slug === 'supplier');
+    const outage = stats?.transitions.find((t) => t.from === 'connected' && t.to === 'unreachable');
+    assert(outage?.reason, 'GET /api/stats shows no connected -> unreachable transition with a reason for supplier');
+    assert(stats.window.errors.unreachable >= 1, `GET /api/stats counted ${stats.window.errors.unreachable} unreachable supplier calls`);
     return [
       `replicas=0 -> dashboard status unreachable after ${down.seconds.toFixed(1)} s, reason "${down.value.statusReason}"`,
+      `GET /api/stats: transition connected -> unreachable "${outage.reason}" at ${outage.at}; window errors.unreachable=${stats.window.errors.unreachable}`,
       `meanwhile: woo ${woo.status}; B's woo__list_orders ok (${orders.count} today); B's supplier__list_products -> isError "${short(firstText(failed), 80)}" in ${failMs} ms`,
       `replicas=1 -> pod Ready after ${ready.seconds.toFixed(1)} s, gateway status connected ${upSeconds.toFixed(1)} s after the scale-up; B's supplier call ok`,
     ];
