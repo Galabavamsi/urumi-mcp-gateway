@@ -4,9 +4,10 @@
 #
 #   1. k3d cluster "urumi" (cluster/k3d-local.yaml): create it, or start it if it is stopped
 #   2. namespaces + Secrets (scripts/secrets.sh; existing Secrets are kept)
-#   3. build the three images, tagged with the git commit, and load them into the cluster
-#   4. helm upgrade --install woo-store (WordPress + MariaDB + woo-mcp) and supplier-mcp
-#   5. print the URLs and check that the storefront answers through Traefik
+#   3. build the five images, tagged with the git commit, and load them into the cluster
+#   4. helm upgrade --install woo-store (WordPress + MariaDB + woo-mcp), supplier-mcp and platform
+#      (gateway + dashboard + Postgres)
+#   5. print the URLs and check that the storefront and the dashboard answer through Traefik
 #
 # Run inside WSL Ubuntu (Docker, k3d, kubectl and helm live there), from anywhere in the repo:
 #   bash scripts/dev-up.sh
@@ -19,6 +20,7 @@ cd "$ROOT"
 CLUSTER=urumi
 CONTEXT="k3d-$CLUSTER"
 STORE_HOST=store.127-0-0-1.sslip.io
+APP_HOST=app.127-0-0-1.sslip.io
 HELM_FLAGS=(--wait --timeout 10m --rollback-on-failure)   # Helm 4 spelling of the old --atomic
 
 step() { printf '\n==> %s\n' "$*"; }
@@ -100,7 +102,10 @@ load() { # image-name
 build "urumi/wordpress:$TAG" images/wordpress
 build "urumi/woo-mcp:$TAG" -f docker/node-service.Dockerfile --build-arg APP=woo-mcp .
 build "urumi/supplier-mcp:$TAG" -f docker/node-service.Dockerfile --build-arg APP=supplier-mcp .
-for image in "urumi/wordpress:$TAG" "urumi/woo-mcp:$TAG" "urumi/supplier-mcp:$TAG"; do
+build "urumi/gateway:$TAG" -f docker/node-service.Dockerfile --build-arg APP=gateway .
+build "urumi/dashboard:$TAG" -f docker/dashboard.Dockerfile .
+for image in "urumi/wordpress:$TAG" "urumi/woo-mcp:$TAG" "urumi/supplier-mcp:$TAG" \
+             "urumi/gateway:$TAG" "urumi/dashboard:$TAG"; do
   load "$image"
 done
 
@@ -122,20 +127,39 @@ helm upgrade --install supplier-mcp charts/mcp-server -n mcp-upstreams \
   "${HELM_FLAGS[@]}" >/dev/null
 helm status supplier-mcp -n mcp-upstreams | sed -n 's/^\(REVISION\|STATUS\):/  \1:/p'
 
+# Installed last: the gateway seeds woo and supplier as upstreams and health-checks them from its
+# first second, so they should already be up (it copes if they are not; they just show Unreachable).
+step "helm: platform (namespace platform: gateway, dashboard, Postgres)"
+helm upgrade --install platform charts/platform -n platform \
+  -f charts/platform/values-local.yaml \
+  --set-string gateway.image.tag="$TAG" --set-string dashboard.image.tag="$TAG" \
+  "${HELM_FLAGS[@]}" >/dev/null
+helm status platform -n platform | sed -n 's/^\(REVISION\|STATUS\):/  \1:/p'
+
 # --- 5. Done -------------------------------------------------------------------------------------
 step "check"
-code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "http://$STORE_HOST/shop/" || true)"
-echo "  GET http://$STORE_HOST/shop/ -> $code"
-[ "$code" = "200" ] || die "the storefront did not answer 200 through Traefik"
+check() { # url, expected HTTP status
+  local code
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$1" || true)"
+  echo "  GET $1 -> $code"
+  [ "$code" = "$2" ] || die "expected $2 from $1 through Traefik"
+}
+check "http://$STORE_HOST/shop/" 200
+check "http://$APP_HOST/" 200            # dashboard SPA (nginx)
+check "http://$APP_HOST/api/auth/me" 401 # gateway REST API answers (no session yet)
 
 cat <<EOF
 
 Store:      http://$STORE_HOST/
 Shop:       http://$STORE_HOST/shop/
 wp-admin:   http://$STORE_HOST/wp-admin/   (user admin; password: Secret store/woo-store-wp, key admin-password)
+Dashboard:  http://$APP_HOST/   (first admin: Secret platform/gateway-bootstrap-admin, from .env)
+MCP URL:    http://$APP_HOST/mcp   (Authorization: Bearer <API key from the dashboard>)
 woo-mcp:      http://woo-mcp.store.svc.cluster.local:8080/mcp            (gateway pods only)
 supplier-mcp: http://supplier-mcp.mcp-upstreams.svc.cluster.local:8080/mcp (gateway pods only)
-Images:     urumi/{wordpress,woo-mcp,supplier-mcp}:$TAG
+Images:     urumi/{wordpress,woo-mcp,supplier-mcp,gateway,dashboard}:$TAG
 
-End-to-end checks (from Windows, repo root):  node scripts/e2e-store.mjs   (or: pnpm e2e:store)
+End-to-end checks (from Windows, repo root):
+  node scripts/e2e-store.mjs   (store layer)
+  node scripts/e2e-dod.mjs     (the brief's Definition of Done, two users, real chat)
 EOF

@@ -2,6 +2,7 @@
 
 Served by the gateway on the dashboard's origin (`app.<baseDomain>`): `/api/*` for the dashboard, `/mcp` for MCP clients.
 JSON in/out. Errors: HTTP status + `{ "error": { "code": "snake_case", "message": "human readable" } }`.
+A `POST` that creates something (invite, invite accept, key, server) answers **201**; everything else 200 (or 204 with no body).
 
 ## Authentication
 - **Dashboard (humans):** session cookie `urumi_session` (HttpOnly, SameSite=Lax, Secure per `COOKIE_SECURE`), 12 h sliding expiry.
@@ -39,7 +40,8 @@ JSON in/out. Errors: HTTP status + `{ "error": { "code": "snake_case", "message"
 ## Upstream servers
 `server` = `{id, slug, name, url, authType: 'none'|'bearer'|'header', headerName, hasCredential, enabled, managed, timeoutMs, toolAllowlist: string[]|null,
  status: 'connected'|'unreachable'|'disabled'|'connecting', statusReason, protocolEra: 'modern'|'legacy'|null, lastCheckedAt, lastOkAt,
- tools: [{name, exposedName, description, hash, exposed: boolean, allowedForMe: boolean}], createdAt, updatedAt}`.
+ tools: [{name, exposedName, description, hash, definitionChangedAt: string|null, exposed: boolean, allowedForMe: boolean}], createdAt, updatedAt}`.
+The list is in registration order (the seeds first, in seed-file order). `definitionChangedAt` is set when a tool's definition hash changed after it was first seen (a possible "rug pull").
 Credentials are **write-only**: never returned, only `hasCredential`.
 
 | Method & path | Who | Body → Response |
@@ -62,7 +64,8 @@ Default seed: members denied `woo/create_product` and `woo/update_order_status` 
 Denied tools are **hidden from `tools/list`** for that user and **rejected** on `tools/call` (audit status `denied`).
 
 ## Audit log
-`entry` = `{id, ts, userId, userEmail, via: 'mcp'|'chat', apiKeyPrefix, serverSlug, tool, exposedName, status: 'ok'|'error'|'timeout'|'unreachable'|'denied'|'auth_rejected', durationMs, error}`.
+`entry` = `{id, ts, userId, userEmail, via: 'mcp'|'chat', apiKeyPrefix, serverSlug, tool, exposedName, status: 'pending'|'ok'|'error'|'timeout'|'unreachable'|'denied'|'auth_rejected', durationMs, error}`.
+`pending` = the call is still running (the row is written before the upstream is called and completed afterwards).
 | `GET /api/audit` | user | query `userId?, serverSlug?, status?, via?, limit (≤200, default 50), before (id cursor)` → `{items:[entry], nextBefore}`; members only ever get their own rows |
 |---|---|---|
 

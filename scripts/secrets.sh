@@ -46,7 +46,9 @@ apply_from_env() { # ns name --from-literal=...
 
 env_get() { # KEY -> value from .env (quotes and trailing comments stripped), empty if missing
   [ -f "$ENV_FILE" ] || return 0
-  grep -E "^[[:space:]]*$1[[:space:]]*=" "$ENV_FILE" | tail -1 \
+  # tr: a .env saved on Windows has CRLF line endings; the \r would end up inside the Secret value
+  # (an email the gateway rejects, an API key header the upstream rejects).
+  tr -d '\r' < "$ENV_FILE" | grep -E "^[[:space:]]*$1[[:space:]]*=" | tail -1 \
     | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]+#.*$//; s/^"(.*)"$/\1/; s/^'"'"'(.*)'"'"'$/\1/'
 }
 

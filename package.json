@@ -10,7 +10,8 @@
     "build": "pnpm -r --if-present build",
     "typecheck": "pnpm -r --if-present typecheck",
     "test": "pnpm -r --if-present test",
-    "e2e:store": "node scripts/e2e-store.mjs"
+    "e2e:store": "node scripts/e2e-store.mjs",
+    "e2e:dod": "node scripts/e2e-dod.mjs"
   },
   "devDependencies": {
     "@modelcontextprotocol/client": "2.3.1",

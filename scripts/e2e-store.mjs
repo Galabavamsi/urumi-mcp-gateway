@@ -24,8 +24,9 @@
 //
 // Secrets: the MCP bearer tokens and the WooCommerce key pair are read with kubectl into memory only
 // and never printed.
-// Each run leaves one "E2E Test Kettle" product (SKU E2E-KETTLE-<run id>) and one guest order behind,
-// so you can look at them in wp-admin.
+// Each run creates one "E2E Test Kettle" product (SKU E2E-KETTLE-<run id>) and one guest order (billing
+// e2e+<run id>@example.test) and deletes both at the end, also after a failure, with WP-CLI in the
+// WordPress pod (found by that SKU and email, so even a half-finished step is cleaned up).
 import { spawn } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
@@ -36,6 +37,9 @@ const STORE_URL = process.env.STORE_URL ?? 'http://store.127-0-0-1.sslip.io';
 const WSL_DISTRO = process.env.WSL_DISTRO ?? 'Ubuntu';
 const QUICK = process.argv.includes('--quick');
 const RUN_ID = Date.now().toString(36); // makes this run's names unique (SKU, probe pods, email)
+// This run's test data, by the identifiers the cleanup finds it with.
+const KETTLE_SKU = `E2E-KETTLE-${RUN_ID.toUpperCase()}`;
+const ORDER_EMAIL = `e2e+${RUN_ID}@example.test`;
 
 // Must match charts/woo-store/values.yaml (store.seedProducts) and the supplier catalog.
 const SEED_PRODUCTS = [
@@ -375,7 +379,7 @@ async function main() {
       method: 'POST',
       headers,
       body: JSON.stringify({
-        billing_address: { ...address, email: `e2e+${RUN_ID}@example.test` },
+        billing_address: { ...address, email: ORDER_EMAIL },
         shipping_address: address,
         payment_method: 'cod',
         customer_note: `e2e run ${RUN_ID}`,
@@ -421,7 +425,7 @@ async function main() {
   });
 
   await check('c3', 'woo-mcp: create_product "E2E Test Kettle" ₹149 appears on the storefront', async () => {
-    const sku = `E2E-KETTLE-${RUN_ID.toUpperCase()}`;
+    const sku = KETTLE_SKU;
     const product = await callTool(woo.legacy, 'create_product', { name: 'E2E Test Kettle', regular_price: 149, sku });
     assert(product.regular_price === '149.00' && product.status === 'publish', `created ${JSON.stringify(product)}`);
     state.kettle = product;
@@ -708,6 +712,25 @@ async function main() {
   });
 }
 
+/**
+ * Deletes this run's product and order(s) with WP-CLI (as an admin-level tool: mcp-bot itself may not delete).
+ * Found by SKU and billing email rather than by remembered ids, so a step that failed half-way (product created,
+ * response lost) is cleaned up too. The seed products are never matched.
+ */
+async function removeTestData() {
+  const php = `
+    $removed = [];
+    $id = wc_get_product_id_by_sku(${JSON.stringify(KETTLE_SKU)});
+    if ($id && ($p = wc_get_product($id))) { $p->delete(true); $removed[] = "product #$id"; }
+    $statuses = array_merge(array_keys(wc_get_order_statuses()), ['trash', 'checkout-draft']);
+    foreach (wc_get_orders(['billing_email' => ${JSON.stringify(ORDER_EMAIL)}, 'status' => $statuses, 'limit' => -1, 'return' => 'ids']) as $oid) {
+      if ($o = wc_get_order($oid)) { $o->delete(true); $removed[] = "order #$oid"; }
+    }
+    echo $removed ? implode(', ', $removed) : 'nothing';`;
+  const out = await inWordpress('wp', 'eval', php);
+  console.log(`\ncleanup: removed ${out.trim()} (SKU ${KETTLE_SKU}, billing ${ORDER_EMAIL})`);
+}
+
 try {
   await main();
 } catch (err) {
@@ -715,6 +738,10 @@ try {
   console.log(`FAIL (setup) ${err instanceof Error ? err.message : String(err)}`);
 } finally {
   for (const cleanup of cleanups.reverse()) await Promise.resolve().then(cleanup).catch(() => {});
+  await removeTestData().catch((err) => {
+    results.push({ id: 'cleanup', ok: false });
+    console.log(`FAIL (cleanup) could not remove this run's test data: ${err instanceof Error ? err.message : String(err)}`);
+  });
 }
 
 const failed = results.filter((r) => !r.ok);

@@ -66,6 +66,8 @@ export const HEALTH_TIMEOUT_MS = 3_000;
 const EXTERNAL_HEALTH_INTERVAL_MS = 30_000;
 /** After failures the gap between checks doubles, up to this multiple of the normal interval (see nextCheckDelay). */
 const MAX_BACKOFF_FACTOR = 6;
+/** Failed checks retried at the fast interval before the gap starts doubling (see nextCheckDelay). */
+const FAST_RETRIES = 3;
 
 export class UpstreamManager {
   private readonly servers = new Map<string, Supervised>();
@@ -105,11 +107,14 @@ export class UpstreamManager {
     return s && { row: s.row, state: s.state };
   }
 
-  /** All supervised (non-deleted) servers, in slug order. */
+  /**
+   * All supervised (non-deleted) servers, oldest registration first (the seeds in seed-file order, so the store's
+   * own server leads the dashboard list; servers an admin adds later go to the end). Slug breaks ties.
+   */
   snapshot(): ServerSnapshot[] {
     return [...this.servers.values()]
       .map((s) => ({ row: s.row, state: s.state }))
-      .sort((a, b) => (a.row.slug < b.row.slug ? -1 : 1));
+      .sort((a, b) => a.row.createdAt.getTime() - b.row.createdAt.getTime() || (a.row.slug < b.row.slug ? -1 : 1));
   }
 
   /** Called whenever the set of tools a client could see may have changed. */
@@ -234,14 +239,17 @@ export class UpstreamManager {
   }
 
   /**
-   * Healthy: the normal interval. After a failure: retry soon (the in-cluster interval, 5 s), then double the gap
-   * after each further failure, up to 6x the normal interval. A blip recovers in seconds; a server that is down
-   * for an hour costs a request every 30 s (in-cluster) or 3 min (external), not every few seconds.
+   * Healthy: the normal interval. After a failure: retry at the fast (in-cluster) interval, 5 s, for the first
+   * FAST_RETRIES failures, so a pod that restarts in 10-20 s is seen back within one check. After that the gap
+   * doubles with each further failure, up to 6x the normal interval: a server that is down for an hour costs a
+   * request every 30 s (in-cluster) or 3 min (external), not every few seconds.
+   *   in-cluster: 5, 5, 5, 10, 20, 30, 30 ... s     external: 5, 5, 5, 10, 20, 40, 80, 160, 180 ... s
    */
   private nextCheckDelay(s: Supervised): number {
     const normal = this.healthInterval(s);
     if (s.failures === 0) return normal;
-    return Math.min(this.opts.healthIntervalMs * 2 ** (s.failures - 1), normal * MAX_BACKOFF_FACTOR);
+    const doublings = Math.max(0, s.failures - FAST_RETRIES);
+    return Math.min(this.opts.healthIntervalMs * 2 ** doublings, normal * MAX_BACKOFF_FACTOR);
   }
 
   private schedule(s: Supervised, delayMs: number): void {

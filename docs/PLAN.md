@@ -142,7 +142,7 @@ The **chat agent** (user A) does exactly the same steps 3–7. Its loop runs ins
 | Language | **TypeScript end to end** (pnpm monorepo) | Official MCP SDK v2 is the reference implementation and Claude Code uses it; one language for UI, backend and servers. |
 | Gateway framework | **Hono** on Node 24 plus MCP TS SDK v2 *low-level* `Server` | Raw `tools/list`/`tools/call` handlers keep the protocol visible; the SDK only does framing and headers. |
 | DB / ORM | **Postgres 18.6** in-cluster plus **Drizzle** | "Everything runs in cluster" rules out Supabase; Drizzle is thin SQL you can read. |
-| Dashboard | **Vite + React 19 + TanStack Query + shadcn/ui**, served by nginx | Simple SPA; same origin as the API, so no CORS and simple cookies. |
+| Dashboard | **Vite + React 19 + TanStack Query + Tailwind 4** (hand-written components, no UI kit), served by nginx | Simple SPA; same origin as the API, so no CORS and simple cookies. |
 | Tool-name collisions | `<slug>__<tool>`, slug `^[a-z][a-z0-9-]{1,11}$`, ≤48 chars (hash suffix on overflow), routed by **lookup table** | Works in every LLM API (no dots, ≤64 incl. Claude Code's `mcp__gw__` prefix). The spec recommends prefixing. |
 | Disabled vs unreachable | Disabled → tools **hidden** and calls **rejected**. Unreachable → tools stay listed (cached), calls **fail fast** with the reason. | Clear semantics; one dead server never breaks listing. |
 | Health | `tools/list` every **5 s** (3 s timeout). Unreachable after 2 fails, or **immediately** on connection refused. UI polls every 2–3 s. | Makes the pod-kill demo visible; a Deployment restarts a pod in ~5–10 s. |
@@ -231,7 +231,7 @@ Demo it on the gateway or MCP images (stateless). The store's DB migrations are 
 
 ## 8. Definition of Done: how we prove each line
 
-A script, `scripts/e2e-dod.ts`, will check all of these automatically (MCP Inspector CLI + kubectl + gateway API), so we know the demo works before recording.
+A script, `scripts/e2e-dod.mjs`, checks all of these automatically (two users created through the invite flow; MCP SDK clients in both protocol eras, the real Claude Code CLI, real Claude Haiku chat over SSE, kubectl and the gateway API), and deletes everything it created, so we know the demo works before recording.
 
 | DoD line | Proof |
 |---|---|
@@ -255,7 +255,7 @@ A script, `scripts/e2e-dod.ts`, will check all of these automatically (MCP Inspe
 | **Oct 9–11** | Custom WordPress image, `woo-store` chart, bootstrap, COD checkout; **woo-mcp** with 5 tools + OAuth1 + tests | `helm install` from zero → guest COD order → signed `GET /orders` from a pod |
 | **Oct 11–14** | **Gateway core**: registry, upstream manager, aggregation and routing, collision scheme, health loop, timeouts, API keys, audit; supplier-mcp; register Firecrawl | Inspector CLI as B: list, call, revoke, disable, pod-kill all behave |
 | **Oct 14–16** | Dashboard (servers, members/invites/keys, audit, chat UI) + chat agent loop | DoD chat steps as user A |
-| **Oct 17–18** | Helm polish (probes, limits, NetworkPolicies, secrets), `e2e-dod.ts`, a bug bash | e2e green on a fresh cluster |
+| **Oct 17–18** | Helm polish (probes, limits, NetworkPolicies, secrets), `e2e-dod.mjs`, a bug bash | e2e green on a fresh cluster |
 | **Oct 19** | 🚦 **CORE GATE.** If e2e is not green, no bonus work starts | — |
 | **Oct 19–21** | VPS: EC2 + k3s + TLS + GHCR CI; stand-outs: security hardening, observability (`/metrics` + reasons), tool permissions, upgrade/rollback | Same charts green on the VPS |
 | **Oct 22–24** | README, DESIGN.md (system design and tradeoffs), THREAT-MODEL.md; record the demo video in segments (backup takes) | Video draft |
@@ -304,7 +304,7 @@ packages/shared/     shared types, tool-name scheme
 images/wordpress/    Dockerfile: wordpress:7.1.3-php8.3-apache + WooCommerce + Storefront + WP-CLI
 charts/woo-store/  charts/platform/  charts/mcp-server/   (each with values-local.yaml / values-prod.yaml)
 cluster/             k3d config, namespaces, cert-manager issuers
-scripts/             setup-wsl-docker.sh, secrets.sh, dev-up.sh, e2e-dod.ts
+scripts/             setup-wsl-docker.sh, secrets.sh, dev-up.sh, e2e-store.mjs, e2e-dod.mjs
 docs/                DESIGN.md, THREAT-MODEL.md, PLAN.md
 README.md
 ```
