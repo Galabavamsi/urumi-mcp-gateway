@@ -1,0 +1,106 @@
+{{- $name := include "mcp-server.name" . -}}
+{{- range $envName, $_ := .Values.secretEnv }}
+{{- if hasKey $.Values.env $envName }}
+{{- fail (printf "%s is set in both env and secretEnv; pick one" $envName) }}
+{{- end }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "mcp-server.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      {{- include "mcp-server.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "mcp-server.labels" . | nindent 8 }}
+      {{- if or .Values.configFiles .Values.podAnnotations }}
+      annotations:
+        {{- if .Values.configFiles }}
+        # A changed ConfigMap does not restart pods by itself; a changed checksum here rolls them.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+    spec:
+      # An MCP server never talks to the Kubernetes API, so it gets no API token at all.
+      automountServiceAccountToken: false
+      # Don't inject FOO_SERVICE_HOST-style variables for every Service in the namespace.
+      enableServiceLinks: false
+      # Our servers exit within ~5 s of SIGTERM (graceful close in @urumi/mcp-common).
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: server
+          image: {{ include "mcp-server.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.args }}
+          args:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.port }}
+              protocol: TCP
+          {{- if or .Values.env .Values.secretEnv }}
+          env:
+            {{- range $envName, $value := .Values.env }}
+            - name: {{ $envName }}
+              value: {{ $value | toString | quote }}
+            {{- end }}
+            # Secrets are only referenced by name (created by scripts/secrets.sh); the chart never holds values.
+            {{- range $envName, $ref := .Values.secretEnv }}
+            - name: {{ $envName }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required (printf "secretEnv.%s.secretName is required" $envName) $ref.secretName }}
+                  key: {{ required (printf "secretEnv.%s.key is required" $envName) $ref.key }}
+            {{- end }}
+          {{- end }}
+          {{- with .Values.probes.startup }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.probes.readiness }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.probes.liveness }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          volumeMounts:
+            # The root filesystem is read-only; /tmp is the only writable place.
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.configFiles }}
+            - name: config
+              mountPath: {{ .Values.configMountPath }}
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ .Values.tmpSizeLimit }}
+        {{- if .Values.configFiles }}
+        - name: config
+          configMap:
+            name: {{ $name }}-config
+        {{- end }}

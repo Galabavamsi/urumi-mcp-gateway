@@ -1,0 +1,11 @@
+# Local k3d cluster (inside WSL). Images are built locally and loaded into the cluster with
+#   k3d image import urumi/<repository>:dev -c urumi
+# so nothing is pulled from a registry (IfNotPresent + a fixed non-"latest" tag).
+image:
+  registry: urumi
+  tag: dev
+  pullPolicy: IfNotPresent
+
+resources:
+  requests: { cpu: 25m, memory: 64Mi }
+  limits: { cpu: 250m, memory: 192Mi }
