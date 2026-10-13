@@ -48,10 +48,13 @@ postgres:
     size: 5Gi
     storageClass: local-path       # k3s local-path on the EBS root volume (encrypted, DeleteOnTermination=false)
 
-# Scheduled Postgres dumps (the backup block and its defaults are in values.yaml; restore steps in
-# docs/OPERATIONS.md). On in production, off locally.
+# Nightly Postgres dumps (postgres-backup, 02:15 IST) onto their own kept PVC. The block and its defaults
+# (keep 7, 2Gi, requests/limits) are in values.yaml; commands and restore in scripts/backup/README.md.
+# On in production, off locally.
 backup:
   enabled: true
+  persistence:
+    storageClass: local-path     # the database's disk too: copy dumps off the VPS (scripts/backup/fetch.sh)
 
 # Prometheus is not installed. When it is, open the metrics port to it only:
 # networkPolicy:

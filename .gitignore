@@ -5,12 +5,22 @@
 *.pem
 *.key
 kubeconfig*
+*.kubeconfig
+!scripts/vps/kubeconfig.sh
+
+# database dumps and uploads archives (scripts/backup/fetch.sh saves outside the repo; manual dumps
+# from docs/OPERATIONS.md land in the current directory). Migrations under apps/*/drizzle/ are code.
+*.sql
+!apps/*/drizzle/*.sql
+*.sql.gz
+*.dump
 
 # private material: assignment brief, raw research notes, personal study notes, tool caches
 assignment-info/
 .research/
 notes/
 .firecrawl/
+.claude/worktrees/
 
 # node / build
 node_modules/

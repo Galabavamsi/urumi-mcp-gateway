@@ -12,7 +12,10 @@ and Secrets follow `docs/CONTRACTS.md` ("Platform", "gateway environment", "Seed
 | `dashboard` | Deployment + Service `:8080` | Image `urumi/dashboard` (nginx-unprivileged serving the React build), uid 101. Probes on `/healthz`. |
 | `postgres` | StatefulSet + Service `:5432` | `postgres:18.6-trixie`, uid 999, data on a `volumeClaimTemplate` mounted at `/var/lib/postgresql`. `pg_isready` probes. |
 | `app` | Ingress | `app.<domain>`: `/api` and `/mcp` → gateway, `/` → dashboard (Traefik). |
-| `platform-*` | NetworkPolicy ×5 | Default deny, then one allow per path (below). |
+| `platform-*` | NetworkPolicy ×5 (×7 with backups) | Default deny, then one allow per path (below). |
+| `postgres-backup` | CronJob (02:15 IST), only if `backup.enabled` | Nightly `pg_dump -Fc` as the `gateway` user into the PVC below, keeping the newest `backup.keep` (7). Same image as Postgres, uid 999, read-only root filesystem, requests/limits, `activeDeadlineSeconds`. |
+| `postgres-backups` | PVC (RWO), only if `backup.enabled` | The dumps. `helm.sh/resource-policy: keep`: survives `helm uninstall` and `backup.enabled=false`. |
+| `postgres-backup-volume-<hash>` | Job, only if `backup.enabled` | Mounts the backup PVC at deploy time, so local-path binds it before Helm's `--wait` gives up, and proves it is writable. |
 
 Every container runs as non-root with a read-only root filesystem (writable `emptyDir`s only where the
 program needs them), no privilege escalation, all capabilities dropped, seccomp `RuntimeDefault`, no
@@ -115,6 +118,7 @@ Every pod of the release starts with no traffic in or out. These paths are then 
 | gateway | supplier-mcp (`mcp-upstreams`, `app.kubernetes.io/name=supplier-mcp`) | 8080 |
 | gateway | any public IP (Anthropic, Firecrawl, AgentMail, admin-added HTTPS upstreams) | 443 |
 | `networkPolicy.metricsFrom` peers (none by default) | gateway | 9091 |
+| `postgres-backup` pods (backups on; also the restore pod of `scripts/backup/restore-gateway.sh`) | postgres | 5432 |
 | every pod of the release | kube-dns | 53 |
 
 The internet rule is `0.0.0.0/0` minus `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10`,
@@ -148,7 +152,7 @@ The rules have some limits:
 - **Volume path.** Postgres 18 images keep `PGDATA` at `/var/lib/postgresql/18/docker`, so the PVC is mounted at `/var/lib/postgresql`. Mounting it at `.../data`, as with older images, makes the container exit.
 - **Shutdown.** Kubernetes stops containers with SIGTERM, which Postgres treats as a *smart* shutdown: it waits for every client to disconnect, and the gateway's connection pool never does. A `preStop` hook asks for a *fast* shutdown instead (`pg_ctl stop --mode=fast --no-wait`): open transactions roll back, a checkpoint is written, and the next start needs no crash recovery.
 - **Probes.** `pg_isready` over TCP with `-U gateway -d gateway`. Without them it would use the OS user `postgres`, a role this database does not have.
-- **Backups.** `kubectl -n platform exec postgres-0 -- pg_dump -U gateway gateway > gateway-$(date +%F).sql`; restore with `kubectl -n platform exec -i postgres-0 -- psql -U gateway -d gateway < file.sql`.
+- **Backups.** With `backup.enabled=true` (on in `values-prod.yaml`) the `postgres-backup` CronJob dumps the database every night. `bash scripts/backup/backup-now.sh platform` takes one now, `verify.sh platform` restores it into a throwaway server and counts rows, and `restore-gateway.sh <dump>` restores it (gateway stopped, safety dump first). A dump is only usable with the `gateway-internal` Secret it was made with; keep a copy of that Secret elsewhere. Details: `scripts/backup/README.md`.
 
 ## Upgrades and rollback
 
@@ -168,7 +172,11 @@ changes should be **expand/contract**:
 
 A release without schema changes (most gateway and dashboard releases) rolls back freely. A release that
 only expanded the schema also rolls back safely. Rolling back across a *contract* step is not safe: back
-up first (above) and restore the dump together with the old image.
+up first (`bash scripts/backup/backup-now.sh platform`), then roll back the image and restore that dump
+(`bash scripts/backup/restore-gateway.sh <dump>`).
+
+`bash scripts/demo/upgrade-rollback.sh` shows all of this live on the local cluster: a good upgrade, a
+broken one that Helm 4 rolls back by itself while the gateway keeps answering, and a manual rollback.
 
 Postgres itself: a minor version bump (`18.6` → `18.7`) is an image change and rolls back freely. A major
 version (`19`) needs `pg_upgrade` or dump/restore and is not done by this chart.

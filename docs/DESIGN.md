@@ -270,10 +270,11 @@ The same three charts are installed; only the values files and the cluster setup
 | Ingress and TLS | Traefik on port 80, plain HTTP | Traefik with cert-manager (Let's Encrypt, HTTP-01, ClusterIssuer `letsencrypt-prod`); all HTTP redirected to HTTPS | `ingress.annotations`, `ingress.tls`, `cluster/traefik-prod.yaml` |
 | Public URLs and cookies | `http://app...`, `COOKIE_SECURE=false`, WordPress home `http://store...` | `https://...`, `COOKIE_SECURE=true` (the chart refuses a mismatch), home URL `https://...` | `gateway.publicBaseUrl`, `gateway.cookieSecure`, `ingress.tls.enabled` |
 | Storage | `local-path` inside the k3d node container; 1 Gi volumes | `local-path` on the EBS root volume (`DeleteOnTermination=false`); Postgres 5 Gi, MariaDB 10 Gi, uploads 5 Gi | `*.persistence` |
-| Images | `urumi/*:<git sha>` built locally, `k3d image import` | `ghcr.io/galabavamsi/*:<git short sha>` built by GitHub Actions; `imagePullSecrets: [ghcr-pull]` only if the packages are private | `*.image.repository`, `--set-string *.image.tag` |
+| Images | `urumi/*:<git sha>` built locally, `k3d image import` | `ghcr.io/galabavamsi/*:<first 7 hex digits of the commit>`, built and pushed by GitHub Actions on every push to `main` (`.github/workflows/ci.yml`); `scripts/vps/deploy.sh` adds `imagePullSecrets: [ghcr-pull]` only while the packages are private | `*.image.repository`, `--set-string *.image.tag` |
 | Secrets | `scripts/secrets.sh` from `.env`, inside WSL | the same script from the laptop through the SSH tunnel; k3s secrets encryption at rest (see VPS.md) | `scripts/secrets.sh` |
 | Kubernetes API | `127.0.0.1:6550` on the laptop | port 6443 only through the SSH tunnel, never public | [VPS.md](VPS.md) |
-| Sizes | smaller requests and limits | the `values.yaml` defaults | `*.resources` |
+| Sizes | smaller requests and limits | sized for a t3.large: about 1.6 GiB of requests for our pods, every limit together still under the node's allocatable memory (budget in [VPS.md](VPS.md#resource-budget-t3large-2-vcpu-8-gib)) | `*.resources` |
+| Backups | off | nightly MariaDB and Postgres dumps onto their own kept PVCs, 7 kept (`scripts/backup/` to back up now, verify, fetch, restore) | `backup.enabled` |
 | WordPress environment type | `local` | `production` | `wordpress.environmentType` |
 
 Two production details are worth knowing. woo-mcp still signs WooCommerce requests with scheme `http`, because

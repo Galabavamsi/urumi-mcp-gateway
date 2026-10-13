@@ -242,8 +242,16 @@ Kubernetes API. `apps/gateway/src/security/ssrf.ts`:
   errors are logged as SQLSTATE, constraint and table only (`db/errors.ts`); configuration errors name the
   variable, never the value. nginx redacts invite tokens from its access log.
 - At rest: upstream credentials encrypted; API keys, sessions and invite tokens stored as HMACs; passwords as
-  scrypt hashes. Kubernetes Secrets themselves are only base64 in the local cluster's datastore; on the VPS, k3s
-  secrets encryption at rest is part of the setup (see [VPS.md](VPS.md)).
+  scrypt hashes. Kubernetes Secrets themselves are only base64 in the local cluster's datastore; on the VPS,
+  `scripts/vps/bootstrap-k3s.sh` turns on k3s secrets encryption (`secrets-encryption: true`; checked on a
+  stand-in VPS: a Secret's value was not found in the datastore files, a ConfigMap's was), and the EBS volume is
+  encrypted too (see [VPS.md](VPS.md#security-notes)).
+- Database dumps (`backup.enabled`, on in production) hold customer data and password hashes. They are written
+  with `umask 077` by the database's own uid onto a PVC that only backup pods mount; backup pods log in as the
+  app user, never root, and may reach only the database port. `scripts/backup/fetch.sh` saves copies outside the
+  repository with mode 0600, and `.gitignore` excludes `*.sql`, `*.sql.gz` and `*.dump`. A gateway dump holds
+  only encrypted upstream credentials and key hashes: without the `gateway-internal` Secret (never in a dump) it
+  cannot be used to call an upstream or to forge an API key.
 
 ### Network isolation
 
@@ -274,8 +282,11 @@ text as text, never as HTML.
 
 Namespaces enforce the Pod Security `baseline` profile and warn and audit on `restricted`. Every container runs
 as non-root with a read-only root filesystem, no privilege escalation, all capabilities dropped, seccomp
-`RuntimeDefault`, and requests and limits. No component talks to the Kubernetes API, so no service-account token
-is mounted anywhere and no RBAC rules are needed. Charts refuse to render an empty or `latest` image tag.
+`RuntimeDefault`, and requests and limits. None of our components talks to the Kubernetes API, so no
+service-account token is mounted in any of our pods (the backup Jobs included) and our charts need no RBAC rules.
+The exception in production is cert-manager, a cluster add-on that manages Certificates through the API with its
+own RBAC; its namespace enforces Pod Security `restricted`. Charts refuse to render an empty or `latest` image
+tag.
 
 ### Supply chain
 
@@ -288,6 +299,10 @@ is mounted anywhere and no RBAC rules are needed. Charts refuse to render an emp
 - `scripts/setup-wsl-docker.sh` verifies the kubectl and Helm checksums; k3d comes from its official install
   script (fetched from the project's main branch) with a pinned release tag.
 - Hosted upstreams change without notice; that is what the rug-pull detection is for.
+- CI (`.github/workflows/ci.yml`) pins every GitHub Action to a full commit SHA, runs with a read-only token
+  (only the image job gets `packages: write`), downloads kubeconform against a SHA-256 written in the workflow,
+  and builds production images from the same commit it tested, tagged with that commit, never `latest`.
+- On the VPS, the k3s installer is checked against a pinned SHA-256 and cert-manager is a pinned chart version.
 - Not done: image signing, SBOMs, dependency or image scanning in CI.
 
 ### Data sent to the model provider

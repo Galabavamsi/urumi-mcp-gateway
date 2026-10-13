@@ -44,12 +44,15 @@ apply_from_env() { # ns name --from-literal=...
   echo "  ~ $ns/$name (from .env)"
 }
 
-env_get() { # KEY -> value from .env (quotes and trailing comments stripped), empty if missing
+env_get() { # KEY -> value from .env (quotes and comments stripped), empty if missing
+  # `KEY=   # note` (as in .env.example) is empty: a value that starts with # is a comment.
   [ -f "$ENV_FILE" ] || return 0
   # tr: a .env saved on Windows has CRLF line endings; the \r would end up inside the Secret value
   # (an email the gateway rejects, an API key header the upstream rejects).
-  tr -d '\r' < "$ENV_FILE" | grep -E "^[[:space:]]*$1[[:space:]]*=" | tail -1 \
-    | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]+#.*$//; s/^"(.*)"$/\1/; s/^'"'"'(.*)'"'"'$/\1/'
+  # `|| true`: grep exits 1 when the key is not in the file, and with `set -o pipefail` that would make
+  # `x=$(env_get KEY)` stop the whole script silently instead of reporting the key as not set below.
+  { tr -d '\r' < "$ENV_FILE" | grep -E "^[[:space:]]*$1[[:space:]]*=" || true; } | tail -1 \
+    | sed -E 's/^[^=]*=[[:space:]]*//; s/(^|[[:space:]]+)#.*$//; s/^"(.*)"$/\1/; s/^'"'"'(.*)'"'"'$/\1/'
 }
 
 shared_token() { # name nsA nsB -> same random token in both namespaces

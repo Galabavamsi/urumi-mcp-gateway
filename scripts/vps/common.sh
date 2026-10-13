@@ -75,5 +75,5 @@ env_get() {
   # "|| true": a key that is not in the file is just empty. (grep exits 1 when nothing matches, and with
   # pipefail that would stop the calling script.)
   { tr -d '\r' < "$file" | grep -E "^[[:space:]]*$1[[:space:]]*=" || true; } | tail -1 \
-    | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]+#.*$//; s/^"(.*)"$/\1/; s/^'"'"'(.*)'"'"'$/\1/'
+    | sed -E 's/^[^=]*=[[:space:]]*//; s/(^|[[:space:]]+)#.*$//; s/^"(.*)"$/\1/; s/^'"'"'(.*)'"'"'$/\1/'
 }

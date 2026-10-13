@@ -58,7 +58,10 @@ wooMcp:
     requests: { cpu: 50m, memory: 96Mi }
     limits: { cpu: 500m, memory: 256Mi }
 
-# Scheduled MariaDB dumps (the backup block and its defaults are in values.yaml; restore steps in
-# docs/OPERATIONS.md). On in production, off locally.
+# Nightly MariaDB dumps (mariadb-backup, 02:00 IST) onto their own kept PVC. The block and its defaults
+# (keep 7, 2Gi, requests/limits) are in values.yaml; commands and restore in scripts/backup/README.md.
+# On in production, off locally.
 backup:
   enabled: true
+  persistence:
+    storageClass: local-path     # the database's disk too: copy dumps off the VPS (scripts/backup/fetch.sh)

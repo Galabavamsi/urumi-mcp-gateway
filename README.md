@@ -98,9 +98,14 @@ charts/
   woo-store/        WordPress, MariaDB, wp-cron, woo-mcp, Ingress, NetworkPolicies (one store per namespace)
   platform/         gateway, dashboard, Postgres, Ingress, NetworkPolicies
   mcp-server/       a generic chart for one in-cluster MCP server (instances/supplier.yaml deploys supplier-mcp)
-cluster/            k3d cluster config, namespaces with Pod Security labels, Traefik HTTP-to-HTTPS redirect (production)
+cluster/            k3d cluster config, namespaces with Pod Security labels; production: Traefik HTTP-to-HTTPS
+                    redirect, cert-manager values and the Let's Encrypt ClusterIssuers (cert-manager/)
 docker/             Dockerfiles for the Node services and the dashboard
 scripts/            setup-wsl-docker.sh, dev-up.sh, secrets.sh, e2e-store.mjs, e2e-dod.mjs, build-app.mjs
+  backup/           back up now, verify, fetch and restore the two databases (README.md inside)
+  demo/             upgrade-rollback.sh: the live Helm 4 upgrade and rollback demo
+  vps/              production: provision the EC2 machine, install k3s, kubeconfig + SSH tunnel, add-ons, deploy
+.github/            CI: tests, chart validation, and the five images pushed to GHCR (workflows/ci.yml)
 docs/               the documents above; PLAN.md is the original build plan, kept for history (the code and
                     these documents are authoritative where they differ)
 ```
@@ -364,13 +369,40 @@ On Windows, run these in PowerShell or Git Bash from the repo root, after `pnpm 
 | `node scripts/e2e-store.mjs` (`--quick` skips the pod restarts) | 19 checks on the live cluster: storefront and guest COD checkout; woo-mcp's six tools over real MCP in both protocol eras; the mcp-bot key is refused customers and settings; both MCP servers return 401 without the bearer token; NetworkPolicies tested from real pods (only gateway pods in `platform` reach the MCP servers, nothing outside the store reaches WordPress or MariaDB); PHP in uploads is refused; pod kill and scale to 0; data survives `helm upgrade` and restarts. It deletes its own test data. |
 | `node scripts/e2e-dod.mjs` (`--keep-users`, `--no-claude-code`) | The brief's Definition of Done, 16 checks with two users created through the real invite flow: A (admin) uses the dashboard chat with the real model, B (member) uses the MCP SDK in both protocol eras and the real Claude Code CLI with only the URL and a key. It covers the COD order, product creation from chat, "orders today", the approval step, a two-server prompt, revoke → 401, disable → `list_changed` and tools gone in both places, supplier scaled to 0 → Unreachable while woo keeps working, pod deletion, and audit attribution. Cost: about one US cent of Claude Haiku plus one Claude Code prompt. It cleans up after itself. |
 
-The end-to-end scripts read the Secrets they need into memory with kubectl and never print them.
+The end-to-end scripts read the Secrets they need into memory with kubectl and never print them. Both also
+run against the VPS with `E2E_STORE_URL`, `E2E_APP_URL`, `E2E_KUBE_CONTEXT` and `E2E_KUBECONFIG`
+([VPS.md](docs/VPS.md#verify)).
+
+| Also | What it proves |
+|---|---|
+| `bash .github/scripts/check-charts.sh` (inside WSL; needs helm and kubeconform) | Every chart lints with `--strict` and renders, with local and prod values, into manifests that pass `kubeconform -strict` against the Kubernetes 1.36.5 schemas |
+| `bash scripts/demo/upgrade-rollback.sh` | Helm 4 upgrade, a broken upgrade rolled back automatically by `--rollback-on-failure` while the gateway keeps answering, a manual rollback, and the store's backup-first path ([OPERATIONS.md](docs/OPERATIONS.md#upgrade-and-rollback)) |
+| `bash scripts/backup/backup-now.sh all`, then `verify.sh store` / `verify.sh platform` | A dump of each database is complete and restores into a throwaway server with the same row counts (needs `backup.enabled`, see [OPERATIONS.md](docs/OPERATIONS.md#backups-and-restore)) |
+
+**CI.** `.github/workflows/ci.yml` runs the typecheck, all tests (the gateway's integration test against a
+Postgres service container), the bundle builds and the chart check on every push and pull request. On a push
+to `main` it then builds the five images and pushes them to GHCR, tagged with the commit's first 7 hex
+digits. Every action is pinned to a commit SHA.
 
 ## Production (VPS) setup
 
 The production target is one **AWS EC2 t3.large** (Ubuntu 24.04, `ap-south-1`) with an Elastic IP, running
 **k3s v1.36.5+k3s1**, the same Kubernetes build as the local k3d cluster, so Traefik, local-path storage and the
-NetworkPolicy controller behave the same. The full runbook is [docs/VPS.md](docs/VPS.md). In short:
+NetworkPolicy controller behave the same. The full runbook is [docs/VPS.md](docs/VPS.md); every step is a script
+in `scripts/vps/`:
+
+```bash
+bash scripts/vps/provision-aws.sh plan    # read-only: what exists, what would be created, the cost
+bash scripts/vps/provision-aws.sh up      # key pair, security group (80/443; 22 from your IP only), t3.large, Elastic IP
+# Cloudflare: A record *.urumi -> the Elastic IP, DNS only (grey cloud)
+ssh -i ~/.ssh/urumi-vps.pem ubuntu@$VPS_HOST 'bash -s' < scripts/vps/bootstrap-k3s.sh   # k3s, Secrets encryption, SSH hardening
+bash scripts/vps/kubeconfig.sh            # ~/.kube/urumi-vps.yaml, context urumi-vps, server 127.0.0.1:16443
+bash scripts/vps/tunnel.sh                # in its own terminal: the SSH tunnel to the API (6443 is never public)
+bash scripts/vps/install-addons.sh        # namespaces, cert-manager, Let's Encrypt issuers, HTTP->HTTPS redirect
+bash scripts/vps/deploy.sh                # GHCR tags exist? Secrets, three Helm releases, certificates, HTTPS smoke test
+```
+
+In short:
 
 - **DNS:** a Cloudflare wildcard record `*.urumi.humanslop.in` → the Elastic IP, DNS-only (grey cloud). Hosts:
   `store.urumi.humanslop.in` and `app.urumi.humanslop.in`.
@@ -393,21 +425,23 @@ helm upgrade --install platform charts/platform -n platform -f charts/platform/v
   --set-string gateway.image.tag=$SHA --set-string dashboard.image.tag=$SHA --wait --timeout 10m --rollback-on-failure
 ```
 
-Status: the charts and production values are ready; the deployment itself is pending.
+Status: the scripts, production values and CI are written and were rehearsed without AWS (a throwaway k3d
+cluster with Let's Encrypt's Pebble test CA, and an Ubuntu 24.04 stand-in for the VPS). The AWS machine has not
+been created yet, so the public deployment is pending.
 
 ## Stand-out items attempted
 
 | Item from the brief | Status | Where |
 |---|---|---|
-| Production-like VPS deployment | In progress: production values, Traefik HTTPS redirect and the runbook exist; deployment pending | `charts/*/values-prod.yaml`, `cluster/traefik-prod.yaml`, [docs/VPS.md](docs/VPS.md) |
+| Production-like VPS deployment | Partly: everything is scripted and rehearsed (provisioning, k3s bootstrap, SSH-tunnel kubeconfig, cert-manager + Let's Encrypt, deploy with smoke test, CI images on GHCR, nightly backups); the AWS machine itself is not created yet | `scripts/vps/`, `charts/*/values-prod.yaml`, `cluster/`, `.github/workflows/ci.yml`, [docs/VPS.md](docs/VPS.md) |
 | Tool permissions | Done. Per-role deny rules (server or `*`, tool or `*`); denied tools are hidden from `tools/list` and refused on `tools/call` (audited as `denied`). Default: members cannot create products, change order status or send email. Plus the chat approval step before destructive or outbound tools. | `apps/gateway/src/policies/policy.ts`, `apps/gateway/src/mcp/toolRouter.ts`, Tool policies page (`apps/dashboard/src/pages/PoliciesPage.tsx`), `apps/gateway/src/chat/confirm.ts`, `apps/gateway/src/chat/approvals.ts` |
 | OAuth on the gateway | Not attempted. API keys only; the 401 deliberately carries no `resource_metadata` so clients don't start OAuth discovery. | — |
 | Handling many tools | Not attempted. Only per-server tool allowlists (Firecrawl exposes 3 of its tools, AgentMail 1). | `toolAllowlist` in `charts/platform/values.yaml` |
 | Hosted MCP servers by image | Not attempted as a dashboard feature. `charts/mcp-server` is a generic chart that deploys any MCP server image with Secret references, limits and a default-deny NetworkPolicy, but an operator installs it with Helm. | `charts/mcp-server/` |
 | Security hardening | Done: SSRF guard (https only, every resolved address must be public, checked again at connect time, no redirects, in-cluster hosts only from an allowlist); default-deny NetworkPolicies in all three charts; every container non-root with a read-only root filesystem, all capabilities dropped and seccomp `RuntimeDefault`; no component talks to the Kubernetes API, so no service-account token is mounted anywhere; upstream credentials AES-256-GCM encrypted at rest; tool definitions from upstreams cleaned and capped | `apps/gateway/src/security/ssrf.ts`, `charts/*/templates/networkpolicies.yaml`, `charts/mcp-server/templates/networkpolicy.yaml`, `apps/gateway/src/crypto/secretBox.ts`, `apps/gateway/src/catalog/`, [THREAT-MODEL.md](docs/THREAT-MODEL.md) |
 | Scaling | Partly: per-user rate limits (60 tool calls per minute, 10 per minute per third-party server). The gateway runs as one replica; multi-replica was not attempted. | `apps/gateway/src/policies/rateLimit.ts`, [DESIGN.md](docs/DESIGN.md#scaling-limits) |
-| Observability | Done: Prometheus metrics on port 9091 (tool calls by server, tool and status; latency per server; upstream up/down; auth rejections), a precise reason for every unreachable server and failed call, JSON logs, and an admin Observability page in the dashboard with live per-server health and traffic | `apps/gateway/src/metrics.ts`, `apps/gateway/src/upstreams/errors.ts`, `GET /api/stats`, [OPERATIONS.md](docs/OPERATIONS.md#observability) |
-| Upgrades and rollback | Documented and scripted: Helm 4 upgrade and rollback per release, expand/contract migrations for the gateway, backup before a store upgrade | [OPERATIONS.md](docs/OPERATIONS.md#upgrade-and-rollback), `scripts/demo/upgrade-rollback.sh` |
+| Observability | Done: Prometheus metrics on port 9091 (tool calls by server, tool and status; latency per server; upstream up/down; auth rejections), a precise reason for every unreachable server and failed call, JSON logs, and an admin **Observability** page with each server's status history, 15-minute calls, error rate, p50/p95 latency, a sparkline, top tools and the last error | `apps/gateway/src/metrics.ts`, `apps/gateway/src/upstreams/errors.ts`, `apps/gateway/src/stats/`, `GET /api/stats`, `apps/dashboard/src/pages/observability/`, [OPERATIONS.md](docs/OPERATIONS.md#observability) |
+| Upgrades and rollback | Done: a live demo script (a good upgrade, a broken one that Helm 4 rolls back by itself while the gateway keeps answering, a manual rollback, the store's backup-first path); expand/contract migrations for the gateway; nightly database dumps with verify, fetch and restore scripts (restore drills tested) | `scripts/demo/upgrade-rollback.sh`, `scripts/backup/`, `charts/*/templates/backup-*.yaml`, [OPERATIONS.md](docs/OPERATIONS.md#upgrade-and-rollback) |
 | Bonus: multi-store provisioning | Not attempted. The `woo-store` chart is already a per-namespace unit, which is the starting point, but there is no provisioning from the dashboard. | — |
 
 ## Known limitations
@@ -431,7 +465,9 @@ Status: the charts and production values are ready; the deployment itself is pen
   the next check runs within 5 s and usually clears it.
 - **Chat cost per turn is dominated by tool schemas.** Firecrawl's schemas are large, so a simple turn reads
   about 20,000 input tokens. Answers are not streamed token by token.
-- **Local storage is a single node's disk** (`local-path`, also on the VPS). Backups are what protects the data.
+- **Local storage is a single node's disk** (`local-path`, also on the VPS), and the nightly dumps sit on that
+  same disk: they protect against logical damage, not against losing the disk. Copying them off is manual
+  (`scripts/backup/fetch.sh`), and product images (the uploads volume) are not in the dumps.
 - **No password change or reset** in the dashboard yet, and users are disabled rather than deleted (so the audit
   log stays attributable), which means a disabled user's email cannot be invited again.
 - **No license chosen yet** (no LICENSE file); the author keeps the copyright.

@@ -20,7 +20,9 @@ case "${1:-start}" in
       docker run -d --name "$NAME" -e POSTGRES_PASSWORD="$PASSWORD" \
         -p "127.0.0.1:${PORT}:5432" --tmpfs /var/lib/postgresql "$IMAGE" >/dev/null
       for _ in $(seq 1 30); do
-        if docker exec "$NAME" pg_isready -U postgres >/dev/null 2>&1; then break; fi
+        # -h 127.0.0.1: during first-start setup the image runs a temporary server on the Unix socket only,
+        # so a socket check says "ready" before the real server listens on TCP.
+        if docker exec "$NAME" pg_isready -h 127.0.0.1 -U postgres >/dev/null 2>&1; then break; fi
         sleep 1
       done
     fi

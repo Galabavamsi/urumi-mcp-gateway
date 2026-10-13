@@ -218,7 +218,7 @@ That gives **all three credential modes**: none/internal, `Authorization: Bearer
 | TLS | off | cert-manager + Let's Encrypt (staging, then prod) |
 | Cookie `secure` | false | true |
 | Images | local tags via `k3d image import`, `IfNotPresent` | `ghcr.io/galabavamsi/*:<git-sha>` built by GitHub Actions |
-| Storage | local-path (inside the k3d node) | local-path on EBS (`DeleteOnTermination=false`) + nightly `mariadb-dump` CronJob |
+| Storage | local-path (inside the k3d node) | local-path on EBS (`DeleteOnTermination=false`) + nightly `mariadb-dump` and `pg_dump` CronJobs (own PVCs, 7 kept; `scripts/backup/`) |
 | Secrets | `scripts/secrets.sh` ← `.env` | the same script over an SSH tunnel; k3s secrets encryption on |
 | WordPress URL | `http://store.127-0-0-1.sslip.io` | `https://store.urumi.humanslop.in` |
 | Resources | small | a bit larger |
@@ -232,6 +232,7 @@ helm rollback <release> <rev>
 ```
 
 Demo it on the gateway or MCP images (stateless). The store's DB migrations are forward-only, so the docs cover the store upgrade as backup → upgrade.
+Built as `scripts/demo/upgrade-rollback.sh` (good upgrade, broken upgrade rolled back by `--rollback-on-failure`, manual rollback, store backup first).
 
 ---
 
@@ -286,11 +287,11 @@ Multi-store bonus: only if the gate passes early **and** VPS work is done. It co
 ## 11. Stand-out items: target vs skip
 
 - ✅ **Target, after the gate:**
-  - Production-like VPS + TLS.
-  - Upgrades and rollback.
-  - Security hardening: SSRF guard, default-deny NetworkPolicies, non-root, encrypted upstream credentials.
-  - Observability: Prometheus `/metrics` (in-cluster only) and clear unreachable reasons.
-  - Tool permissions.
+  - Production-like VPS + TLS. *(Status 2026-10-14: scripted and rehearsed in `scripts/vps/` + CI; AWS not created yet.)*
+  - Upgrades and rollback. *(Done: `scripts/demo/upgrade-rollback.sh`, `scripts/backup/`.)*
+  - Security hardening: SSRF guard, default-deny NetworkPolicies, non-root, encrypted upstream credentials. *(Done.)*
+  - Observability: Prometheus `/metrics` (in-cluster only) and clear unreachable reasons. *(Done, plus `GET /api/stats` and the dashboard's Observability page.)*
+  - Tool permissions. *(Done.)*
 - 🤔 **Maybe:** handling many tools (Anthropic tool search in the chat, or a `search_tools`/`call_tool` meta-tool); per-key rate limits.
 - ❌ **Skip:**
   - OAuth: 2–4 days, easy to get subtly wrong.

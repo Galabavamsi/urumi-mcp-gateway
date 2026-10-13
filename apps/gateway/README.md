@@ -38,6 +38,7 @@ JWT for the logged-in user (`auth/chatToken.ts`), so its calls get the same poli
 | `audit/auditLog.ts` | Audit rows, cursor pagination |
 | `api/` | REST routes for the dashboard |
 | `metrics.ts`, `http.ts` | Prometheus metrics; listeners |
+| `stats/` | In-memory per-server call stats (15-minute window, histogram p50/p95, top tools, last error) and status history, for `GET /api/stats` |
 | `chat/` | The chat agent (separate module, mounted at `/api/chat`); `chat/confirm.ts` decides which tools wait for the user's approval |
 
 ## Develop and test

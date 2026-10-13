@@ -42,8 +42,8 @@ Every step below is a script in `scripts/vps/`. They are safe to re-run, and the
   - While the repository is private, the packages are private too. Then `deploy.sh` needs `GHCR_PULL_TOKEN`: a classic GitHub token with only `read:packages`.
   - The images hold no secrets, so making the packages public removes that step.
 - **`.env`** (gitignored) with the same keys as locally: `BOOTSTRAP_ADMIN_EMAIL`, `BOOTSTRAP_ADMIN_PASSWORD`, `ANTHROPIC_API_KEY`, `FIRECRAWL_API_KEY`, `AGENTMAIL_API_KEY`.
-  - Keep every one of these keys in the file, even with an empty value. Today `scripts/secrets.sh` stops without a message when one is missing.
-  - Optional extras for the VPS: `ACME_EMAIL` and `GHCR_PULL_TOKEN`.
+  - A key that is missing or empty is reported as "not set (skipped)" and its Secret is left alone.
+  - Optional extras for the VPS: `ACME_EMAIL` and `GHCR_PULL_TOKEN` (both listed in `.env.example`).
 
 ## Costs and saving credits
 
@@ -179,8 +179,18 @@ This was rehearsed end to end with Let's Encrypt's own test CA (Pebble), which v
 
 ## 6. Images from CI
 
-Every push builds and pushes the five images to `ghcr.io/galabavamsi/<name>:<first 7 hex digits of the commit>`.
-- Check with `gh run list --limit 5`.
+`.github/workflows/ci.yml` runs on every push and pull request: typecheck, unit and integration tests (against a Postgres
+service container), bundle builds, and `helm lint` + `helm template | kubeconform -strict` of every chart with local and prod
+values (`.github/scripts/check-charts.sh`). Only on a push to `main`, and only when those pass, it builds the five images for
+linux/amd64 and pushes them to `ghcr.io/galabavamsi/<name>:<first 7 hex digits of the commit>` (plus the full SHA; never `latest`).
+- It needs no secret: the job token gets `packages: write` for the image job only. Keep **Settings → Actions → General →
+  Workflow permissions** on the read-only default.
+- The first push creates the five packages as **private** (the repository is private). Either set `GHCR_PULL_TOKEN` for
+  `deploy.sh`, or make each package public (package settings → Change visibility). Public packages also publish the Node
+  bundles with their source maps, which embed the TypeScript source.
+- If a package already exists from an earlier manual push, link it to the repository first (package settings → Manage
+  Actions access → add the repository with role Write), or the push fails with 403.
+- Check with `gh run list --workflow ci.yml --limit 5` and `gh run view <id> --log-failed`.
 - `deploy.sh` verifies, before touching the cluster, that all five tags exist.
   - It uses GHCR's registry API: a pull token from `ghcr.io/token`, then `HEAD /v2/<repo>/manifests/<tag>`.
   - When a tag is missing, it tells you which image and stops.
@@ -253,7 +263,8 @@ On an https store, check `c6` of `e2e-store.mjs` signs its WooCommerce REST call
 | Ship a new version | push, wait for CI, `bash scripts/vps/deploy.sh` |
 | See releases | `helm --kubeconfig ~/.kube/urumi-vps.yaml --kube-context urumi-vps list -A` |
 | Roll back the gateway or an MCP server | `helm … history platform -n platform`, then `helm … rollback platform <revision> -n platform --wait` |
-| Roll back the store | database migrations only go forward: restore a backup first (docs/OPERATIONS.md), then roll back |
+| Back up now / copy off the VPS | `KUBECONFIG=~/.kube/urumi-vps.yaml bash scripts/backup/backup-now.sh all --context urumi-vps`, then `fetch.sh store` and `fetch.sh platform` with the same options |
+| Roll back the store | database migrations only go forward: back up before the upgrade; to undo it, `helm … rollback woo-store <revision>` first, then `scripts/backup/restore-store.sh <that dump>` (docs/OPERATIONS.md) |
 | Rotate an `.env` secret | edit `.env`, run `deploy.sh` (re-applies it), restart the gateway: `kubectl … -n platform rollout restart deploy/gateway` |
 | Your IP changed | `bash scripts/vps/provision-aws.sh allow-my-ip`, then restart `tunnel.sh` |
 | Pause to save credits | `provision-aws.sh stop`, and later `start` (same IP and data) |
@@ -313,7 +324,7 @@ Allocatable memory is about 7.5 GiB: 8 GiB minus the kernel's share and k3s's 10
 | **node total** | **940m of 2000m (47%)** | **1868Mi ≈ 1.8 GiB of ~7.5 GiB (25%)** | **≈ 6.4 GiB** |
 
 This leaves headroom:
-- Requests use a quarter of the memory, so the backup CronJobs, cert-manager's solver pods during issuance and a rolling update's second pod all fit.
+- Requests use a quarter of the memory, so the two backup CronJobs (50m/64Mi each, limit 256Mi, about a minute a night), cert-manager's solver pods during issuance and a rolling update's second pod all fit.
 - Even every limit at once (≈ 6.4 GiB) stays under allocatable, so no pod can push the node into memory pressure.
 - The rehearsal cluster measured `cpu 890m, memory 1740Mi` requested: the same figures without wp-cron, which was between runs.
 - Actual idle use is far lower: about 0.7 GiB for everything (`kubectl top`).
@@ -355,9 +366,25 @@ This leaves headroom:
 
 ## Backups and restore
 
-`backup.enabled: true` in both `values-prod.yaml` turns on the scheduled MariaDB and Postgres dumps. How they work, where they are stored, how to copy them off the machine and how to restore are in **docs/OPERATIONS.md**.
+`backup.enabled: true` in both `values-prod.yaml` turns on the nightly dumps: MariaDB at 02:00 IST (CronJob `mariadb-backup`, PVC
+`mariadb-backups`) and Postgres at 02:15 IST (`postgres-backup`, `postgres-backups`), 7 kept each. The PVCs are on the same EBS
+disk as the databases, so they cover logical damage only; copy dumps off the machine. How they work, the restore procedure and
+the commands are in [OPERATIONS.md](OPERATIONS.md#backups-and-restore) and [scripts/backup/README.md](../scripts/backup/README.md).
+The scripts take `--context`; point them at the VPS like this (tunnel running):
 
-Take a fresh backup and download it before `provision-aws.sh down`, or before a store upgrade that migrates the database.
+```bash
+export KUBECONFIG=~/.kube/urumi-vps.yaml
+bash scripts/backup/backup-now.sh all --context urumi-vps
+bash scripts/backup/fetch.sh store --context urumi-vps       # -> ~/urumi-backups/urumi-vps/store/
+bash scripts/backup/fetch.sh platform --context urumi-vps
+```
+
+Keep a copy of the Secrets as well, apart from the dumps: a gateway dump is useless without the `gateway-internal` Secret it was
+made with. Take a fresh backup and download it before `provision-aws.sh down`, or before a store upgrade that migrates the database.
+
+The upgrade/rollback demo runs against the VPS too; it ships a deliberately broken gateway release, so it asks for
+`--allow-remote`:
+`KUBECONFIG=~/.kube/urumi-vps.yaml bash scripts/demo/upgrade-rollback.sh --context urumi-vps --allow-remote --app-url https://app.urumi.humanslop.in`.
 
 ## Teardown
 
@@ -388,7 +415,6 @@ Afterwards:
 | `kubeconfig.sh` / ssh: host key changed | the instance was replaced: `ssh-keygen -R <elastic-ip>` |
 | `deploy.sh`: "not in GHCR for tag …" | the commit was not pushed or CI is still running (`gh run list`), or the packages are private and `GHCR_PULL_TOKEN` is not set |
 | Pods stuck in `ImagePullBackOff` | private packages without `ghcr-pull`, or an expired token: set `GHCR_PULL_TOKEN` and deploy again |
-| `deploy.sh` stops at the Secrets step without a message | a key is missing from `.env`; list every key (an empty value is fine) |
 
 ## How this was tested
 

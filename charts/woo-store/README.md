@@ -10,7 +10,10 @@ release in a second namespace.
 | `mariadb` | StatefulSet + Service `:3306` | `mariadb:11.8.9`, runs as uid 999, data on a `volumeClaimTemplate`. |
 | `wp-cron` | CronJob (every 5 min) | `wp cron event run --due-now`. Replaces WP-Cron's HTTP loopback, which cannot work in-cluster (`DISABLE_WP_CRON`). |
 | `woo-mcp` | Deployment + Service `:8080` | Our MCP server (`apps/woo-mcp`). Only if `wooMcp.enabled` (default `true`). |
-| `<release>-*` | NetworkPolicy ×6 | Default deny, then one allow per path (below). |
+| `<release>-*` | NetworkPolicy ×6 (×8 with backups) | Default deny, then one allow per path (below). |
+| `mariadb-backup` | CronJob (02:00 IST), only if `backup.enabled` | Nightly `mariadb-dump --single-transaction \| gzip` as the app user into the PVC below, keeping the newest `backup.keep` (7). Same image as MariaDB, uid 999, read-only root filesystem, requests/limits, `activeDeadlineSeconds`. |
+| `mariadb-backups` | PVC (RWO), only if `backup.enabled` | The dumps. `helm.sh/resource-policy: keep`: survives `helm uninstall` and `backup.enabled=false`. |
+| `mariadb-backup-volume-<hash>` | Job, only if `backup.enabled` | Mounts the backup PVC at deploy time, so local-path binds it before Helm's `--wait` gives up, and proves it is writable. |
 
 The chart never creates Secrets or namespaces. `scripts/secrets.sh` creates both (names in
 `docs/CONTRACTS.md`), and the chart refers to the Secrets by name (`secrets.*` values).
@@ -40,6 +43,7 @@ helm upgrade --install woo-store charts/woo-store -n store -f charts/woo-store/v
 | Storage | 1Gi each, default StorageClass | uploads 5Gi, MariaDB 10Gi, `storageClass: local-path` |
 | Resources | small requests | values.yaml defaults |
 | `WP_ENVIRONMENT_TYPE` | `local` | `production` |
+| Backups (`backup.enabled`) | off | on, `storageClass: local-path` |
 
 To lint the prod file, pass the tags too:
 `helm lint charts/woo-store -f charts/woo-store/values-prod.yaml --set-string wordpress.image.tag=x --set-string wooMcp.image.tag=x`.
@@ -79,6 +83,7 @@ Every pod of the release starts with no traffic in or out. These paths are then 
 | woo-mcp pods of this release | wordpress | 8080 |
 | wordpress (incl. bootstrap), wp-cron | mariadb | 3306 |
 | `platform` namespace **and** `app.kubernetes.io/component=gateway` | woo-mcp | 8080 |
+| `mariadb-backup` pods (backups on; also the restore pod of `scripts/backup/restore-store.sh`) | mariadb | 3306 |
 | every pod of the release | kube-dns | 53 |
 
 The rules have some limits:
@@ -100,16 +105,17 @@ The stateless parts roll back freely: the woo-mcp image, the CronJob, resources 
 **The store image does not roll back freely.** A new WordPress or WooCommerce version migrates the
 database on the next pod start (bootstrap step 4), and those migrations are forward-only. Rolling
 the image back afterwards would run old code against a newer schema. So **back up before upgrading
-the store image**:
+the store image** (needs `backup.enabled=true`; details in `scripts/backup/README.md`):
 
 ```bash
-kubectl -n store exec mariadb-0 -- sh -c \
-  'MYSQL_PWD="$MARIADB_PASSWORD" mariadb-dump -u wordpress --single-transaction wordpress' > woo-store-$(date +%F).sql
-# restore: kubectl -n store exec -i mariadb-0 -- sh -c 'MYSQL_PWD="$MARIADB_PASSWORD" mariadb -u wordpress wordpress' < file.sql
+bash scripts/backup/backup-now.sh store          # a dump on the mariadb-backups volume, checked complete
+bash scripts/backup/verify.sh store              # optional: restore it into a throwaway server, count rows
 ```
 
-If an upgraded store misbehaves, restore the dump together with the old image. Do not just roll
-back the image.
+If an upgraded store misbehaves, undo it in this order: `helm rollback woo-store <revision> -n store --wait`
+first, then `bash scripts/backup/restore-store.sh <the dump from before the upgrade>`. In the other order
+the new image would migrate the restored dump forward again. Do not just roll back the image.
+`scripts/demo/upgrade-rollback.sh` (step f) shows the safe path live.
 
 **Clusters installed before chart 0.1.1 need a one-off step.** Older versions put the chart version
 label on the MariaDB `volumeClaimTemplates`, which cannot be changed, so the first upgrade to 0.1.1

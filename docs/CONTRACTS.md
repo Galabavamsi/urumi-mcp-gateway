@@ -28,7 +28,8 @@ pods matching `{namespace: platform} AND {app.kubernetes.io/component: gateway}`
 | platform | `gateway-bootstrap-admin` | `email`, `password` (from `.env`) |
 | platform | `gateway-llm` | `anthropic-api-key` (from `.env`) |
 | platform | `gateway-upstream-seed` | `firecrawl-api-key`, `agentmail-api-key` (from `.env`) |
-| store + mcp-upstreams | `ghcr-pull` | VPS only, and only while the GHCR packages are private: type `kubernetes.io/dockerconfigjson` with a `read:packages` token. Created by hand (`kubectl create secret docker-registry ghcr-pull --docker-server=ghcr.io ...`), never by the charts; enabled with the charts' `imagePullSecrets` value |
+| store + platform + mcp-upstreams | `ghcr-pull` | VPS only, and only while the GHCR packages are private: type `kubernetes.io/dockerconfigjson` with a classic `read:packages` token. Created by `scripts/vps/deploy.sh` from `GHCR_PULL_TOKEN` (environment or `.env`), never by the charts; `deploy.sh` passes `imagePullSecrets[0].name=ghcr-pull` to a release whenever the Secret exists in its namespace (`values-prod.yaml` keeps `imagePullSecrets: []`) |
+| store, platform | `woo-store-tls`, `platform-tls` | VPS only: TLS certificates written by cert-manager (ClusterIssuer `letsencrypt-prod` or `letsencrypt-staging`, `cluster/cert-manager/cluster-issuers.yaml`) for the Ingresses' `tls.secretName`; never created by hand |
 
 ## Services (ClusterIP unless noted)
 | Service | Namespace | Port | Reached by |
@@ -44,9 +45,14 @@ pods matching `{namespace: platform} AND {app.kubernetes.io/component: gateway}`
 | `urumi/wordpress:<tag>` | `images/wordpress/` (FROM `wordpress:7.1.3-php8.3-apache`, WooCommerce + Storefront + WP-CLI baked in, Apache on :8080) | uid 33 (www-data) |
 | `urumi/woo-mcp:<tag>` | `docker/node-service.Dockerfile --build-arg APP=woo-mcp` | uid 1000 (node) |
 | `urumi/supplier-mcp:<tag>` | `docker/node-service.Dockerfile --build-arg APP=supplier-mcp` | uid 1000 (node) |
+| `urumi/gateway:<tag>` | `docker/node-service.Dockerfile --build-arg APP=gateway` | uid 1000 (node) |
+| `urumi/dashboard:<tag>` | `docker/dashboard.Dockerfile` (nginx-unprivileged) | uid 101 (nginx) |
 
 Locally images are loaded with `k3d image import <img> -c urumi` and `imagePullPolicy: IfNotPresent` (never `:latest`).
-In production the registry prefix is `ghcr.io/galabavamsi/` (replacing `urumi/`) and tags are git SHAs: `ghcr.io/galabavamsi/wordpress`, `ghcr.io/galabavamsi/woo-mcp`, `ghcr.io/galabavamsi/supplier-mcp`. CI must push exactly these names. Pass tags with `--set-string` (a short SHA can be all digits).
+In production the registry prefix is `ghcr.io/galabavamsi/` (replacing `urumi/`) and the tag is the first 7 hex digits of the git commit
+(`${GITHUB_SHA::7}`): `ghcr.io/galabavamsi/{wordpress,woo-mcp,supplier-mcp,gateway,dashboard}`. CI (`.github/workflows/ci.yml`, job
+`images`, pushes to `main` only) pushes exactly these five names, each also tagged with the full SHA, never `latest`.
+Pass tags with `--set-string` (a short SHA can be all digits).
 
 ## woo-mcp environment
 | Var | Example | Meaning |
@@ -155,7 +161,8 @@ pods matching `{namespace: platform} AND {app.kubernetes.io/component: gateway}`
 | platform | `gateway-bootstrap-admin` | `email`, `password` (from `.env`) |
 | platform | `gateway-llm` | `anthropic-api-key` (from `.env`) |
 | platform | `gateway-upstream-seed` | `firecrawl-api-key`, `agentmail-api-key` (from `.env`) |
-| store + mcp-upstreams | `ghcr-pull` | VPS only, and only while the GHCR packages are private: type `kubernetes.io/dockerconfigjson` with a `read:packages` token. Created by hand (`kubectl create secret docker-registry ghcr-pull --docker-server=ghcr.io ...`), never by the charts; enabled with the charts' `imagePullSecrets` value |
+| store + platform + mcp-upstreams | `ghcr-pull` | VPS only, and only while the GHCR packages are private: type `kubernetes.io/dockerconfigjson` with a classic `read:packages` token. Created by `scripts/vps/deploy.sh` from `GHCR_PULL_TOKEN` (environment or `.env`), never by the charts; `deploy.sh` passes `imagePullSecrets[0].name=ghcr-pull` to a release whenever the Secret exists in its namespace (`values-prod.yaml` keeps `imagePullSecrets: []`) |
+| store, platform | `woo-store-tls`, `platform-tls` | VPS only: TLS certificates written by cert-manager (ClusterIssuer `letsencrypt-prod` or `letsencrypt-staging`, `cluster/cert-manager/cluster-issuers.yaml`) for the Ingresses' `tls.secretName`; never created by hand |
 
 ## Services (ClusterIP unless noted)
 | Service | Namespace | Port | Reached by |
@@ -171,9 +178,14 @@ pods matching `{namespace: platform} AND {app.kubernetes.io/component: gateway}`
 | `urumi/wordpress:<tag>` | `images/wordpress/` (FROM `wordpress:7.1.3-php8.3-apache`, WooCommerce + Storefront + WP-CLI baked in, Apache on :8080) | uid 33 (www-data) |
 | `urumi/woo-mcp:<tag>` | `docker/node-service.Dockerfile --build-arg APP=woo-mcp` | uid 1000 (node) |
 | `urumi/supplier-mcp:<tag>` | `docker/node-service.Dockerfile --build-arg APP=supplier-mcp` | uid 1000 (node) |
+| `urumi/gateway:<tag>` | `docker/node-service.Dockerfile --build-arg APP=gateway` | uid 1000 (node) |
+| `urumi/dashboard:<tag>` | `docker/dashboard.Dockerfile` (nginx-unprivileged) | uid 101 (nginx) |
 
 Locally images are loaded with `k3d image import <img> -c urumi` and `imagePullPolicy: IfNotPresent` (never `:latest`).
-In production the registry prefix is `ghcr.io/galabavamsi/` (replacing `urumi/`) and tags are git SHAs: `ghcr.io/galabavamsi/wordpress`, `ghcr.io/galabavamsi/woo-mcp`, `ghcr.io/galabavamsi/supplier-mcp`. CI must push exactly these names. Pass tags with `--set-string` (a short SHA can be all digits).
+In production the registry prefix is `ghcr.io/galabavamsi/` (replacing `urumi/`) and the tag is the first 7 hex digits of the git commit
+(`${GITHUB_SHA::7}`): `ghcr.io/galabavamsi/{wordpress,woo-mcp,supplier-mcp,gateway,dashboard}`. CI (`.github/workflows/ci.yml`, job
+`images`, pushes to `main` only) pushes exactly these five names, each also tagged with the full SHA, never `latest`.
+Pass tags with `--set-string` (a short SHA can be all digits).
 
 ## woo-mcp environment
 | Var | Example | Meaning |
@@ -268,6 +280,20 @@ Annotations = only `readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWor
 only from in-cluster servers (host in `INTERNAL_HOST_ALLOWLIST`); every third-party tool gets `readOnlyHint: false, destructiveHint: true,
 openWorldHint: true`. The chat agent asks the user before any tool whose hints say destructive or outbound (`apps/gateway/src/chat/confirm.ts`).
 A description or schema text with phrases typical of prompt injection is flagged (`suspicious` in the API, a warning in the log), not removed.
+
+## Backups (`backup.enabled`, charts `woo-store` and `platform`; off locally, on in `values-prod.yaml`)
+| Release / namespace | CronJob (schedule, IST) | PVC (kept by Helm) | Dump file name |
+|---|---|---|---|
+| `woo-store` / `store` | `mariadb-backup` (02:00) | `mariadb-backups` | `wordpress-YYYYMMDDTHHMMSSZ.sql.gz` (mariadb-dump, gzip) |
+| `platform` / `platform` | `postgres-backup` (02:15) | `postgres-backups` | `gateway-YYYYMMDDTHHMMSSZ.dump` (pg_dump `-Fc`) |
+
+`app.kubernetes.io/name` values the backups use (the NetworkPolicies key on them, so nothing else may carry them):
+- `mariadb-backup`, `postgres-backup`: the backup pods' network identity. `backup-networkpolicy.yaml` opens exactly these pods → the
+  database port (+ DNS); the restore pod of `scripts/backup/restore-*.sh` carries it on purpose.
+- `mariadb-backup-volume`, `postgres-backup-volume`: the one-shot volume-check Job (`*-backup-volume-<hash>`); no network.
+- `backup-tools`: helper pods of `scripts/backup/*.sh` (verify, fetch); no network.
+
+The dumps log in as the app user (`woo-store-db/password`, `gateway-postgres/password`), never as root. Scripts: `scripts/backup/README.md`.
 
 ## NetworkPolicy behaviour on k3s (kube-router)
 A blocked connection is **refused** (ECONNREFUSED in a few ms), not dropped, so callers never wait for a

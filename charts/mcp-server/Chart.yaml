@@ -5,7 +5,7 @@ description: >-
   Deployment, ClusterIP Service, optional read-only config files, and a default-deny NetworkPolicy
   that only lets the gateway in. Used for supplier-mcp; reusable for any MCP server container image.
 type: application
-version: 0.1.0
+version: 0.1.1
 # The app version is per instance (image.tag), so this only marks the chart's first release.
 appVersion: "0.1.0"
 kubeVersion: ">=1.30.0-0"

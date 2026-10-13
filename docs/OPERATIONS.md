@@ -37,8 +37,16 @@ helm rollback <release> <revision> -n <namespace> --wait
 - **What `--rollback-on-failure` cannot undo:** database migrations that a new pod already ran before it failed.
   That is why the rules differ per component.
 
-`scripts/demo/upgrade-rollback.sh` walks through an upgrade and a rollback on the local cluster for the demo;
-its header says exactly what it changes.
+`bash scripts/demo/upgrade-rollback.sh` (add `--pause` when recording) shows this live on the local cluster in
+about two and a half minutes: (a) `helm history platform`; (b) a harmless upgrade (the gateway's `LOG_LEVEL`
+flips) rolled out without a failed request; (c) a **broken** upgrade (a gateway image tag that does not exist)
+with `--wait --timeout 90s --rollback-on-failure`: the new pod never gets Ready, the old one keeps answering,
+and Helm 4 rolls the release back by itself; (d) `helm rollback` to the starting revision; (e) a health check;
+(f) the store's safe path: `backup-now.sh store`, an upgrade, and a rollback only after checking that the
+WordPress image did not change. During b-d it probes `/api/auth/me` and `/mcp` through Traefik every few
+seconds and counts the answers. It refuses a context that is not `k3d-*` unless given `--allow-remote`, and it
+refuses to roll back if someone else deployed in the meantime. Its header lists exactly what it changes. Step f
+turns store backups on and leaves them on (the next `dev-up.sh` turns them off again).
 
 ### Gateway and dashboard (release `platform`)
 
@@ -53,7 +61,8 @@ They are forward-only, so schema changes follow **expand/contract**:
    image back is safe even though the schema stays expanded.
 2. Ship code that uses the new shape.
 3. *Contract:* a later release drops or renames what nothing uses any more. Rolling back across a contract step
-   is **not** safe: restore the dump taken before it (below) together with the old image.
+   is **not** safe: take a dump before it (`bash scripts/backup/backup-now.sh platform`), and to undo it roll
+   back the image and restore that dump (`bash scripts/backup/restore-gateway.sh <dump>`).
 
 Most gateway and dashboard releases change no schema and roll back freely:
 
@@ -95,10 +104,13 @@ moment its pod starts, and those migrations are forward-only. If the new pod the
 puts the old image back on top of the migrated database. The MariaDB image also upgrades its system tables on a
 version change (`MARIADB_AUTO_UPGRADE`). So:
 
-1. Back up the database (and uploads if you care about media), see [Backups](#backups-and-restore).
+1. Back up the database: `bash scripts/backup/backup-now.sh store` (and the uploads if you care about media),
+   see [Backups](#backups-and-restore).
 2. Upgrade: `helm upgrade --install woo-store charts/woo-store -n store -f charts/woo-store/values-<env>.yaml --set-string wordpress.image.tag=<sha> --set-string wooMcp.image.tag=<sha> --wait --timeout 10m --rollback-on-failure`.
 3. Check the storefront, `kubectl -n store logs deploy/wordpress -c bootstrap`, and `node scripts/e2e-store.mjs --quick`.
-4. If it misbehaves: roll back the image **and** restore the dump taken in step 1. Never only the image.
+4. If it misbehaves: `helm rollback woo-store <revision> -n store --wait` **first**, then
+   `bash scripts/backup/restore-store.sh <the dump from step 1>`. In the other order the new image would
+   migrate the restored dump forward again. Never only the image.
 
 WordPress runs one replica with the `Recreate` strategy (its uploads volume is ReadWriteOnce), so a store
 upgrade has a short downtime. woo-mcp, the CronJob, resources and NetworkPolicies are stateless and roll back
@@ -131,44 +143,65 @@ upstream credentials, `api-key-pepper` is what every API key hash was made with,
 key hash WooCommerce keeps, and the database passwords live inside the databases. Keep a copy of the Secrets,
 but never in the same place as the dumps.
 
-**Nightly backups.** The charts get backup CronJobs, switched on with the values key `backup.enabled`, that dump
-each database every night with a retention period; the matching backup and restore scripts live under
-`scripts/backup/`. Their headers are the reference for schedules, targets and retention. Whatever the target, a
-copy has to leave the node: with `local-path` storage (locally and on the VPS) the volumes and any backup on the
-same disk share one failure.
+**Nightly backups.** With `backup.enabled=true` (on in both `values-prod.yaml`, off locally) each chart runs
+a backup CronJob that dumps its database onto a PVC of its own and keeps the newest 7 dumps:
 
-**Manual backup** (each command was checked against the local cluster):
+| Release | CronJob (IST) | Dump | PVC |
+|---|---|---|---|
+| `woo-store` | `mariadb-backup` (02:00) | `mariadb-dump --single-transaction --routines \| gzip` → `wordpress-<UTC time>.sql.gz` | `mariadb-backups` |
+| `platform` | `postgres-backup` (02:15) | `pg_dump -Fc` → `gateway-<UTC time>.dump` | `postgres-backups` |
+
+The dump runs in the database's own image as the app user (never root), is written under a hidden
+`.partial` name and renamed only after it is checked complete, and the PVC carries
+`helm.sh/resource-policy: keep`, so neither `helm uninstall` nor turning backups off deletes the dumps.
+Design, gotchas and test results: [scripts/backup/README.md](../scripts/backup/README.md).
+
+**The commands** (inside WSL; every script takes `--context`, default `k3d-urumi`, and `--help`):
 
 ```bash
-DATE=$(date +%F)
-kubectl -n store exec mariadb-0 -- sh -c \
-  'MYSQL_PWD="$MARIADB_PASSWORD" mariadb-dump -u wordpress --single-transaction wordpress' > woo-store-$DATE.sql
+bash scripts/backup/backup-now.sh store|platform|all   # a dump now, from the CronJob's own template
+bash scripts/backup/verify.sh store|platform [dump]    # restore into a throwaway server in a no-network pod, count rows
+bash scripts/backup/fetch.sh store|platform [dump]     # copy off the cluster to ~/urumi-backups/<context>/<ns>/ (sha256 checked, mode 0600)
+bash scripts/backup/restore-store.sh [dump]            # no argument: list the dumps
+bash scripts/backup/restore-gateway.sh [dump]
+```
+
+On the VPS add `--context urumi-vps` and run them with `KUBECONFIG=~/.kube/urumi-vps.yaml` while
+`scripts/vps/tunnel.sh` runs. The scripts need the CronJob, so on the local cluster turn backups on first:
+
+```bash
+helm upgrade woo-store charts/woo-store -n store --reset-then-reuse-values --set backup.enabled=true \
+  --wait --timeout 10m --rollback-on-failure        # likewise platform charts/platform -n platform
+```
+
+The next `scripts/dev-up.sh` turns them off again (it uses only `values-local.yaml`); the PVC and its dumps
+stay until you delete it (`kubectl -n store delete pvc mariadb-backups`).
+
+**Restore.** `restore-store.sh` and `restore-gateway.sh` change nothing until you type the namespace name.
+Then they stop the writers (store: `wordpress` and `woo-mcp` scaled to 0, `wp-cron` suspended; platform:
+`gateway` scaled to 0) and suspend the backup CronJob, take a **safety dump** of the current database (so
+the restore itself can be undone), drop and recreate the database, load the dump from a pod with the backup's
+network identity, and start the writers again. Both apps migrate forward on start. The data-loss window is
+everything written after the dump; the store is down for 1-2 minutes, the gateway for 10-30 seconds. If any
+step fails, the writers stay stopped on purpose (an empty database would otherwise make WordPress install a
+fresh store and the gateway create a fresh first admin) and the script prints the commands to resume.
+Restore drills in throwaway namespaces took 37 s (store) and 31 s (gateway).
+
+After a gateway restore, API keys revoked and users disabled after the dump are active again: revoke and
+disable them again.
+
+**Not in the dumps: product images.** They live on the `wordpress-uploads` volume. Copy them by hand:
+
+```bash
 kubectl -n store exec deploy/wordpress -c wordpress -- \
-  tar -C /srv/wordpress/wp-content -czf - uploads > uploads-$DATE.tgz
-kubectl -n platform exec postgres-0 -c postgres -- \
-  pg_dump -U gateway --clean --if-exists gateway > gateway-$DATE.sql
+  tar -C /srv/wordpress/wp-content -czf - uploads > uploads-$(date +%F).tgz
+# restore: kubectl -n store exec -i deploy/wordpress -c wordpress -- tar -C /srv/wordpress/wp-content -xzf - < uploads-<date>.tgz
 ```
 
-`--single-transaction` gives a consistent MariaDB snapshot without locking the shop. `--clean --if-exists` makes
-the Postgres dump start by dropping what it is about to create, so it restores over an existing database. The
-MariaDB dump drops each table before creating it by default.
-
-**Restore** (stop the writers first, so nothing changes underneath; unlike the backup commands, these have not
-been run against the live cluster yet):
-
-```bash
-# store
-kubectl -n store scale deploy/wordpress --replicas=0
-kubectl -n store exec -i mariadb-0 -- sh -c 'MYSQL_PWD="$MARIADB_PASSWORD" mariadb -u wordpress wordpress' < woo-store-<date>.sql
-kubectl -n store scale deploy/wordpress --replicas=1
-# gateway
-kubectl -n platform scale deploy/gateway --replicas=0
-kubectl -n platform exec -i postgres-0 -c postgres -- psql -U gateway -d gateway < gateway-<date>.sql
-kubectl -n platform scale deploy/gateway --replicas=1
-```
-
-Restore the uploads with `kubectl -n store exec -i deploy/wordpress -c wordpress -- tar -C /srv/wordpress/wp-content -xzf - < uploads-<date>.tgz`.
-Practise a restore on a throwaway k3d cluster (a different cluster name and ports) before you need it.
+**Off the machine.** With `local-path` storage (locally and on the VPS) the backup PVC sits on the same disk
+as the databases: it protects against logical damage (a bad migration, a deleted row, a broken upgrade), not
+against losing the disk or the VM. Copy dumps off with `fetch.sh`, and keep the Secrets (above) somewhere
+else again. S3 or EBS snapshots would be the next step.
 
 ## Observability
 
@@ -211,9 +244,17 @@ gateway_upstream_up == 0
   check, refreshed every 3 seconds, plus each tool's "Definition changed" and "Suspicious text" flags.
 - **Audit log** filters by user, server, status and channel (`mcp` or `chat`); every row has the duration and,
   for failures, a short reason.
-- **Observability** (admins, `GET /api/stats`) shows live health and recent traffic per server: status history,
-  call counts, errors and latency over a recent window. These counters are kept in memory and start again from
-  zero when the gateway restarts; the audit log and Prometheus are the durable record.
+- **Observability** (admins only; page `/observability`, data from `GET /api/stats`, refreshed every 3 seconds)
+  has one card per server: status and reason with since when, the last 20 status changes with their reasons
+  (newest first), calls, error rate, p50 and p95 latency over the last 15 minutes, a calls-per-minute sparkline
+  with failed calls in red, errors by status, the last error, the most-used tools and since-start totals. The
+  error rate leaves out `denied` calls (they never reached the server), and fail-fast `unreachable` calls are not
+  timed, so an outage does not make the latency look better. A tool's own error text is not kept (it can repeat
+  the caller's arguments; the audit log has it). The Servers page also shows admins since when an unreachable
+  server has been down. These counters are kept in memory and start again from zero when the gateway restarts;
+  the audit log and Prometheus are the durable record. Demo: open the page and run
+  `kubectl -n mcp-upstreams scale deploy/supplier-mcp --replicas=0`; the card turns red with
+  `connection refused` within about 10 s, and recovers within about 20 s of scaling back to 1.
 
 ### Logs
 

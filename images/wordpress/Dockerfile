@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1
-#
 # Urumi store image: the official WordPress image (Apache + mod_php) with WooCommerce, the Storefront
 # theme and WP-CLI baked in.
 #
