@@ -1,0 +1,5 @@
+# Per-instance value files are passed with -f; they are not part of a packaged chart.
+instances/
+.DS_Store
+*.swp
+*.tmp

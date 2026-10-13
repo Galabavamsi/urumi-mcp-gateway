@@ -1,0 +1,12 @@
+{{- $name := include "mcp-server.name" . -}}
+{{ $name }} is deployed in namespace {{ .Release.Namespace }} ({{ include "mcp-server.image" . }}).
+
+MCP endpoint (in-cluster only): http://{{ $name }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.port }}/mcp
+{{- if .Values.networkPolicy.enabled }}
+NetworkPolicy: default-deny; ingress on :{{ .Values.port }} only from the peers in networkPolicy.ingressFrom
+(by default gateway pods in namespace platform). Other pods time out.
+{{- end }}
+
+Check it:
+  kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/instance={{ .Release.Name }}
+  kubectl -n {{ .Release.Namespace }} logs deploy/{{ $name }}

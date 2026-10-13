@@ -1,0 +1,35 @@
+# supplier-mcp (apps/supplier-mcp): the small supplier-catalog MCP server in namespace mcp-upstreams.
+# Install / upgrade locally (from the repo root, inside WSL):
+#   helm upgrade --install supplier-mcp charts/mcp-server -n mcp-upstreams \
+#     -f charts/mcp-server/values-local.yaml -f charts/mcp-server/instances/supplier.yaml \
+#     --wait --timeout 10m --rollback-on-failure
+# In production use values-prod.yaml instead of values-local.yaml and add --set image.tag=<git-sha>.
+
+# Pinned so the Service is always supplier-mcp.mcp-upstreams.svc.cluster.local:8080 (docs/CONTRACTS.md),
+# whatever the release is called.
+nameOverride: supplier-mcp
+
+image:
+  repository: supplier-mcp   # -> urumi/supplier-mcp:dev locally, ghcr.io/galabavamsi/supplier-mcp:<sha> in prod
+
+env:
+  LOG_LEVEL: info
+  # Demo-only switches, OFF by default (apps/supplier-mcp/src/config.ts). Turn one on only while demoing:
+  #   --set env.DEMO_SLOW_TOOL=true             adds slow_lookup {seconds}: shows the gateway's call timeout
+  #   --set env.DEMO_POISONED_DESCRIPTION=true  poisons check_stock's description: shows the threat model
+  DEMO_SLOW_TOOL: "false"
+  DEMO_POISONED_DESCRIPTION: "false"
+
+secretEnv:
+  # Bearer token the gateway must send on /mcp. The Secret exists in mcp-upstreams AND platform with the
+  # same value (scripts/secrets.sh); this chart only references it.
+  MCP_AUTH_TOKEN:
+    secretName: supplier-mcp-auth
+    key: token
+
+# The built-in catalog is used. To serve another one without rebuilding the image, uncomment both:
+# configFiles:
+#   catalog.json: |
+#     [{"sku": "SUP-GHEE-500", "name": "A2 Cow Ghee (500ml)", "category": "kitchen",
+#       "unit_cost_inr": 450, "moq": 12, "stock": 80, "lead_time_days": 6}]
+# and under env:   CATALOG_PATH: /config/catalog.json

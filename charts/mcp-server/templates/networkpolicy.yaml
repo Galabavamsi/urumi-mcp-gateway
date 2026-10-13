@@ -1,0 +1,47 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $np := .Values.networkPolicy }}
+# Selecting this release's pods with BOTH policy types makes them default-deny in both directions:
+# any traffic not allowed by a rule below is dropped (kubelet probes from the node still work).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "mcp-server.name" . }}
+  labels:
+    {{- include "mcp-server.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "mcp-server.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  {{- if $np.ingressFrom }}
+  ingress:
+    # Only the listed peers, and only on the MCP port. By default: gateway pods in namespace platform.
+    - from:
+        {{- toYaml $np.ingressFrom | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.port }}
+  {{- else }}
+  ingress: []
+  {{- end }}
+  {{- if or $np.dns.enabled $np.extraEgress }}
+  egress:
+    {{- if $np.dns.enabled }}
+    # DNS lookups only. The server needs nothing else unless extraEgress adds it.
+    - to:
+        {{- toYaml $np.dns.to | nindent 8 }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    {{- end }}
+    {{- with $np.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- else }}
+  egress: []
+  {{- end }}
+{{- end }}

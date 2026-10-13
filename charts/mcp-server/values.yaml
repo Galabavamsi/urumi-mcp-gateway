@@ -1,0 +1,101 @@
+# Generic defaults for one small in-cluster MCP server. Layer the files like this (later wins):
+#   values.yaml (this file) -> values-local.yaml | values-prod.yaml (environment) -> instances/<name>.yaml (which server)
+# Example: helm upgrade --install supplier-mcp charts/mcp-server -n mcp-upstreams \
+#            -f charts/mcp-server/values-local.yaml -f charts/mcp-server/instances/supplier.yaml \
+#            --wait --timeout 10m --rollback-on-failure
+
+# Object names and the app.kubernetes.io/name label. Empty = the release name.
+nameOverride: ""
+# app.kubernetes.io/component label. Must never be "gateway" (the chart refuses it): upstream
+# NetworkPolicies let in pods that carry component=gateway in namespace platform.
+component: mcp-server
+
+replicaCount: 1
+
+image:
+  registry: ""        # e.g. "urumi" locally, "ghcr.io/galabavamsi" in production (set by the environment file)
+  repository: ""      # e.g. "supplier-mcp" (set by the instance file)
+  tag: ""             # required; a version or git SHA, never "latest"
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# Extra container arguments (the image's CMD stays the entrypoint's default when empty).
+args: []
+
+# Container port; also the Service port and the only port the NetworkPolicy opens. Our servers use 8080.
+port: 8080
+
+# Plain environment variables, as a map so environment and instance files can override single keys.
+env: {}
+# Environment variables read from existing Secrets (the chart never creates or embeds secrets):
+#   MCP_AUTH_TOKEN: { secretName: supplier-mcp-auth, key: token }
+secretEnv: {}
+
+# Optional files, mounted read-only at configMountPath (e.g. catalog.json -> /config/catalog.json).
+configFiles: {}
+configMountPath: /config
+
+podAnnotations: {}
+
+# Our servers serve /healthz (process alive) and /readyz (ready for traffic) outside the /mcp route,
+# so probes need no bearer token. Images without them can override with tcpSocket probes.
+probes:
+  # Off by default: our Node servers listen within a second. Set one for slow-starting images, so
+  # liveness does not kill them while they boot.
+  startup: {}
+  readiness:
+    httpGet: { path: /readyz, port: http }
+    periodSeconds: 5
+    timeoutSeconds: 2
+    failureThreshold: 2
+  liveness:
+    httpGet: { path: /healthz, port: http }
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 3
+
+resources:
+  requests: { cpu: 25m, memory: 64Mi }
+  limits: { cpu: 250m, memory: 192Mi }
+
+terminationGracePeriodSeconds: 15
+
+# Pod Security "restricted"-compliant. runAsUser must be numeric: our image's USER is "node", a name
+# the kubelet cannot check against runAsNonRoot, so it would refuse to start the container.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  seccompProfile: { type: RuntimeDefault }
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities: { drop: [ALL] }
+
+# Size cap of the writable /tmp (emptyDir); the root filesystem is read-only.
+tmpSizeLimit: 32Mi
+
+networkPolicy:
+  enabled: true
+  # Peers allowed to reach `port`. namespaceSelector and podSelector in the SAME list item are ANDed
+  # (gateway pods that are in namespace platform). Putting a "-" before podSelector would make them
+  # two separate peers (ORed) and let in every pod of platform plus gateway-labelled pods anywhere.
+  ingressFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: platform
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/component: gateway
+  dns:
+    enabled: true
+    to:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: kube-system
+        podSelector:
+          matchLabels:
+            k8s-app: kube-dns
+  # Extra egress rules (NetworkPolicyEgressRule list), e.g. for a server that calls an outside API.
+  # Default: none, so a compromised server cannot reach anything else.
+  extraEgress: []

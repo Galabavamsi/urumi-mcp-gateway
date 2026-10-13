@@ -1,0 +1,11 @@
+{{- if .Values.configFiles }}
+# Optional files for the server (e.g. supplier-mcp's catalog.json), mounted read-only at configMountPath.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "mcp-server.name" . }}-config
+  labels:
+    {{- include "mcp-server.labels" . | nindent 4 }}
+data:
+  {{- toYaml .Values.configFiles | nindent 2 }}
+{{- end }}
