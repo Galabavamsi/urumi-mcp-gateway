@@ -472,3 +472,14 @@ No AWS resource was created while writing these scripts; `provision-aws.sh plan`
   - The sshd settings took effect.
   - A second run was a no-op.
   - Secrets encryption works: a ConfigMap value was found in plain text in the datastore files, a Secret value was not.
+  - (That run used the earlier trust-on-first-use ssh. The host-key pinning that replaced it was tested on its
+    own: the console parser against a sample console output, and the ssh options with `ssh -G`.)
+- **`deploy.sh` guards and the pre-upgrade dump** (a second throwaway k3d cluster, an empty `.env`, and a
+  self-signed ClusterIssuer standing in for Let's Encrypt):
+  - Uncommitted `charts/` and a `TAG` whose `charts/` differ from HEAD were both refused before any change.
+  - The first install passed with `--wait-for-jobs`: both backup-volume checks completed.
+  - After the WordPress image tag was changed by hand, `deploy.sh` took a store dump, upgraded, and printed the
+    undo commands; running them (`helm rollback`, then `restore-store.sh` with that dump) restored the store.
+    A redeploy of the same tag took no dump.
+  - Helm 4.3 with a Job that fails after 20 s: `--wait` reported the release deployed at once, while
+    `--wait --wait-for-jobs` failed it.
