@@ -69,6 +69,69 @@ In production the registry prefix is `ghcr.io/galabavamsi/` (replacing `urumi/`)
 | `DEMO_SLOW_TOOL` | `false` | `true` adds `slow_lookup {seconds}` (gateway timeout demo) |
 | `DEMO_POISONED_DESCRIPTION` | `false` | `true` appends a labelled prompt-injection text to `check_stock`'s description (threat-model demo) |
 
+## Platform (namespace `platform`, chart `charts/platform`, release `platform`)
+| Service | Port | Reached by |
+|---|---|---|
+| `gateway` | 8080 (`/api/*`, `/mcp`, `/healthz`, `/readyz`) | Traefik (Ingress `app.<baseDomain>` paths `/api` and `/mcp`) |
+| `gateway-metrics` | 9091 (`/metrics`) | in-cluster only (never on the Ingress) |
+| `dashboard` | 8080 (static SPA via nginx-unprivileged) | Traefik (Ingress `app.<baseDomain>` path `/`) |
+| `postgres` | 5432 | gateway pods only |
+
+Gateway pods carry `app.kubernetes.io/component: gateway` (the label upstream NetworkPolicies trust).
+Ingress host: local `app.127-0-0-1.sslip.io`, production `app.urumi.humanslop.in`. MCP URL for clients: `<PUBLIC_BASE_URL>/mcp`.
+
+Images: `urumi/gateway:<tag>` (`docker/node-service.Dockerfile --build-arg APP=gateway`), `urumi/dashboard:<tag>` (`docker/dashboard.Dockerfile`), Postgres `postgres:18.x` pinned (PVC mounted at `/var/lib/postgresql`).
+
+### gateway environment
+| Var | Source / example | Meaning |
+|---|---|---|
+| `PORT` | `8080` | Public HTTP listener (`/api`, `/mcp`, health) |
+| `INTERNAL_MCP_PORT` | `8081` | Loopback-only (127.0.0.1) MCP listener used by the chat agent; accepts only chat JWTs |
+| `METRICS_PORT` | `9091` | Prometheus `/metrics` |
+| `PGHOST` / `PGPORT` / `PGDATABASE` / `PGUSER` | `postgres` / `5432` / `gateway` / `gateway` | Postgres connection |
+| `PGPASSWORD` | Secret `gateway-postgres/password` | |
+| `API_KEY_PEPPER` | Secret `gateway-internal/api-key-pepper` | HMAC-SHA256 key for hashing API keys |
+| `CREDENTIALS_KEY` | Secret `gateway-internal/credentials-key` | base64 32 bytes, AES-256-GCM for upstream credentials at rest |
+| `CHAT_JWT_KEY` | Secret `gateway-internal/chat-jwt-key` | HS256 key for the chat agent's 5-minute on-behalf-of tokens |
+| `SESSION_SECRET` | Secret `gateway-internal/session-secret` | HMAC key for session-token hashing |
+| `BOOTSTRAP_ADMIN_EMAIL` / `BOOTSTRAP_ADMIN_PASSWORD` | Secret `gateway-bootstrap-admin` | First admin, created only when the users table is empty |
+| `ANTHROPIC_API_KEY` | Secret `gateway-llm/anthropic-api-key` | Chat agent LLM |
+| `LLM_MODEL` | `claude-haiku-5-5` | |
+| `PUBLIC_BASE_URL` | `http://app.127-0-0-1.sslip.io` | Shown in the UI (MCP URL, invite links) |
+| `COOKIE_SECURE` | `false` local / `true` prod | Session cookie `Secure` flag |
+| `STORE_TZ` | `Asia/Kolkata` | Chat system prompt ("today") |
+| `SEED_SERVERS_FILE` | `/config/servers.json` (ConfigMap) | Upstreams pre-registered at startup (see below) |
+| `SEED_WOO_TOKEN` | Secret `woo-mcp-auth/token` | Credential for seed `woo` |
+| `SEED_SUPPLIER_TOKEN` | Secret `supplier-mcp-auth/token` | Credential for seed `supplier` |
+| `SEED_FIRECRAWL_KEY` / `SEED_AGENTMAIL_KEY` | Secret `gateway-upstream-seed` (optional) | Credentials for seeds `firecrawl`, `mail` |
+| `INTERNAL_HOST_ALLOWLIST` | `woo-mcp.store.svc.cluster.local,supplier-mcp.mcp-upstreams.svc.cluster.local` | The only cluster-internal hosts an upstream URL may point at (SSRF guard); everything else must be public HTTPS |
+| `HEALTH_INTERVAL_MS` / `DEFAULT_CALL_TIMEOUT_MS` | `5000` / `10000` | Upstream health loop / per-call timeout default |
+| `LOG_LEVEL` | `info` | |
+
+### Seed file (`servers.json`, rendered from Helm values)
+```json
+[
+  { "slug": "woo", "name": "WooCommerce store", "url": "http://woo-mcp.store.svc.cluster.local:8080/mcp",
+    "auth": { "type": "bearer", "secretEnv": "SEED_WOO_TOKEN" }, "timeoutMs": 10000 },
+  { "slug": "supplier", "name": "Supplier catalog", "url": "http://supplier-mcp.mcp-upstreams.svc.cluster.local:8080/mcp",
+    "auth": { "type": "bearer", "secretEnv": "SEED_SUPPLIER_TOKEN" }, "timeoutMs": 10000 },
+  { "slug": "firecrawl", "name": "Firecrawl", "url": "https://mcp.firecrawl.dev/v2/mcp",
+    "auth": { "type": "bearer", "secretEnv": "SEED_FIRECRAWL_KEY" }, "timeoutMs": 30000,
+    "toolAllowlist": ["firecrawl_scrape", "firecrawl_search", "firecrawl_map"] },
+  { "slug": "mail", "name": "AgentMail (urumi@agentmail.to)", "url": "https://mcp.agentmail.to/mcp",
+    "auth": { "type": "header", "headerName": "x-api-key", "secretEnv": "SEED_AGENTMAIL_KEY" }, "timeoutMs": 30000,
+    "toolAllowlist": ["send_message"] }
+]
+```
+Seeding semantics: a seed is inserted only if no row (including soft-deleted ones) has that slug, so an admin's delete or edit survives restarts.
+Exception: a seed's **credential** is re-synced from its env var on every start (the Secret is the source of truth, so rotation = update Secret + restart).
+A seed whose `secretEnv` is unset/empty is skipped with a log line.
+
+### Tool exposure rules
+Exposed name = `<slug>__<toolName>` (slug `^[a-z][a-z0-9-]{1,11}$`, immutable; tool name sanitized to `[A-Za-z0-9_-]`; total ≤ 48 chars,
+overflow → first 41 chars + `_` + 6 hex of sha256). Routing uses a lookup table `exposedName → (serverId, originalName)`, never string splitting.
+Description shown to models = `[<slug>] ` + upstream description with control/zero-width/bidi/tag characters removed, capped at 1500 chars.
+
 ## NetworkPolicy behaviour on k3s (kube-router)
 A blocked connection is **refused** (ECONNREFUSED in a few ms), not dropped, so callers never wait for a
 timeout. A Service with zero ready pods is refused the same way, so "blocked" and "down" look identical
