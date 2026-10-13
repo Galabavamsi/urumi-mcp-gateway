@@ -33,7 +33,10 @@ const ORDER = {
   currency: 'INR',
   date_created_gmt: '2026-10-13T19:05:00',
   total: '1097.00',
-  billing: { first_name: 'Asha', last_name: 'Rao', email: 'asha@example.test', phone: '+91 90000 00000', city: 'Bengaluru' },
+  // Shopper-typed fields carry what an attacker would hide in them: a zero-width space, Unicode tag
+  // characters (invisible "ASCII smuggling") and a note far longer than any real one.
+  billing: { first_name: 'Asha​', last_name: 'Rao', email: 'asha@example.test', phone: '+91 90000 00000', city: 'Bengaluru' },
+  customer_note: `Please call before delivery${String.fromCodePoint(0xe0049, 0xe0047)}\n${'x'.repeat(5000)}`,
   line_items: [
     { name: 'Masala Chai Tin (250g)', sku: 'URU-CHAI-250', quantity: 2, total: '598.00' },
     { name: 'Handloom Cotton Tote', sku: 'URU-TOTE-01', quantity: 1, total: '499.00' },
@@ -210,6 +213,12 @@ describe.each([
     expect(byName.create_product!.annotations).toMatchObject({ readOnlyHint: false, idempotentHint: false });
     expect(byName.update_order_status!.annotations).toMatchObject({ destructiveHint: true });
     expect(byName.create_product!.inputSchema.required).toEqual(['name', 'regular_price']);
+    // "refunded" would make WooCommerce create a full refund record and email the customer: not offered.
+    const statusSchema = byName.update_order_status!.inputSchema.properties?.status as { enum?: string[] };
+    expect(statusSchema.enum).toContain('completed');
+    expect(statusSchema.enum).not.toContain('refunded');
+    expect(byName.update_order_status!.description).toMatch(/Refunds are not supported/);
+    expect(byName.update_order_status!.description).not.toMatch(/only changes the status/);
   });
 
   it("list_orders date=today asks WooCommerce for the store's day in UTC", async () => {
@@ -317,6 +326,11 @@ describe('the other tools', () => {
       billing: { name: 'Asha Rao', email: 'asha@example.test', phone: '+91 90000 00000', city: 'Bengaluru' },
       totals: { total: '1097.00' },
     });
+    // The note arrives cleaned and capped: no invisible characters, at most 500 characters.
+    const note = out.customer_note as string;
+    expect(note.startsWith('Please call before delivery xxx')).toBe(true);
+    expect([...note].length).toBeLessThanOrEqual(500);
+    expect(note).not.toMatch(/[​\u{E0000}-\u{E007F}]/u);
     expect(out.line_items).toEqual([
       { name: 'Masala Chai Tin (250g)', sku: 'URU-CHAI-250', quantity: 2, total: '598.00' },
       { name: 'Handloom Cotton Tote', sku: 'URU-TOTE-01', quantity: 1, total: '499.00' },

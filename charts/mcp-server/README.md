@@ -44,7 +44,7 @@ helm upgrade --install supplier-mcp charts/mcp-server -n mcp-upstreams \
 # production (k3s on the VPS)
 helm upgrade --install supplier-mcp charts/mcp-server -n mcp-upstreams \
   -f charts/mcp-server/values-prod.yaml -f charts/mcp-server/instances/supplier.yaml \
-  --set image.tag=<git-sha> --wait --timeout 10m --rollback-on-failure
+  --set-string image.tag=<git-sha> --wait --timeout 10m --rollback-on-failure
 ```
 
 Demo-only switches. Both are off by default, and you turn one on with an upgrade (`helm rollback` turns it off again):

@@ -29,6 +29,10 @@ spec:
           restartPolicy: Never
           enableServiceLinks: false
           automountServiceAccountToken: false
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           securityContext:
             {{- include "woo-store.podSecurityContext" (dict "uid" 33 "fsGroup" true) | nindent 12 }}
           containers:
@@ -56,7 +60,7 @@ spec:
               volumeMounts:
                 # Scheduled WooCommerce jobs write logs and exports to uploads, like the web pod.
                 - name: uploads
-                  mountPath: /var/www/html/wp-content/uploads
+                  mountPath: /srv/wordpress/wp-content/uploads
                 - name: tmp
                   mountPath: /tmp
           volumes:

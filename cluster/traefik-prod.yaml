@@ -1,0 +1,25 @@
+# Production only (k3s on the VPS): Traefik answers every plain-HTTP request with a permanent redirect
+# to HTTPS. Without it Traefik serves each Ingress on BOTH entrypoints (web :80 and websecure :443), and
+# neither WordPress nor WooCommerce redirects the storefront by itself, so http://store.<domain>/checkout/
+# would take billing details, session cookies and, later, gateway API keys over cleartext.
+# Cluster-wide on purpose: it covers store.* and app.* alike.
+# cert-manager's HTTP-01 challenge keeps working: Let's Encrypt follows the redirect to port 443.
+#
+# NEVER apply this to the local k3d cluster: it runs plain http (http://*.127-0-0-1.sslip.io).
+#   kubectl apply -f cluster/traefik-prod.yaml    # k3s's helm-controller then upgrades Traefik
+# Check:  curl -sI http://store.urumi.humanslop.in/checkout/   -> 301/308 with Location: https://...
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik            # must match k3s's bundled HelmChart kube-system/traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    ports:
+      web:
+        http:              # key path of the chart k3s v1.36.5 bundles (traefik 40.1.5), not the older ports.web.redirections
+          redirections:
+            entryPoint:
+              to: websecure
+              scheme: https
+              permanent: true

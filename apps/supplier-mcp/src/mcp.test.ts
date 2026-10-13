@@ -4,7 +4,7 @@ import { once } from 'node:events';
 import type http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { serveMcp } from '@urumi/mcp-common';
+import { serveMcp, type McpHttpServer } from '@urumi/mcp-common';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { loadCatalog } from './catalog.ts';
 import { DEMO_OFF, type DemoSwitches } from './config.ts';
@@ -13,7 +13,7 @@ import { POISONED_DESCRIPTION_SUFFIX, createSupplierServer } from './tools.ts';
 const TOKEN = 'test-token-0123456789abcdef';
 const catalog = loadCatalog();
 
-async function start(demo: DemoSwitches): Promise<{ server: http.Server; url: string }> {
+async function start(demo: DemoSwitches): Promise<{ server: McpHttpServer; url: string }> {
   // Port 0 = any free port, so tests never clash with a server already running on 8080.
   const server = serveMcp({ name: 'supplier-mcp-test', port: 0, bearerToken: TOKEN, factory: () => createSupplierServer(catalog, demo) });
   if (!server.listening) await once(server, 'listening');
@@ -186,5 +186,26 @@ describe('demo switches', () => {
   it('slow_lookup refuses out-of-range waits', async () => {
     const result = await client.callTool({ name: 'slow_lookup', arguments: { seconds: 600 } });
     expect(result.isError).toBe(true);
+  });
+});
+
+describe('graceful shutdown (what SIGTERM runs)', () => {
+  it('lets an in-flight tool call finish, then refuses new connections', async () => {
+    const own = await start({ slowTool: true, poisonedDescription: false });
+    const client = await connect(own.url, 'auto');
+    try {
+      const call = client.callTool({ name: 'slow_lookup', arguments: { seconds: 1 } });
+      await new Promise((resolve) => setTimeout(resolve, 200)); // the call is now running on the server
+      const started = Date.now();
+      const [result] = await Promise.all([call, own.server.shutdown({ delayMs: 0 })]);
+
+      expect(structured(result)).toEqual({ slept_seconds: 1 }); // a normal result, not an abort
+      // Finished when the call did, not after an idle keep-alive timeout (5 s) or the drain deadline.
+      expect(Date.now() - started).toBeLessThan(2500);
+      expect(own.server.listening).toBe(false);
+      await expect(fetch(own.url.replace(/\/mcp$/, '/healthz'))).rejects.toThrow();
+    } finally {
+      await client.close();
+    }
   });
 });

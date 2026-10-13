@@ -35,7 +35,8 @@ spec:
       automountServiceAccountToken: false
       # Don't inject FOO_SERVICE_HOST-style variables for every Service in the namespace.
       enableServiceLinks: false
-      # Our servers exit within ~5 s of SIGTERM (graceful close in @urumi/mcp-common).
+      # On SIGTERM our servers keep serving ~3 s, let in-flight calls finish, and exit within 12 s
+      # (drain in @urumi/mcp-common/serve.ts), so this must stay above 12.
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}

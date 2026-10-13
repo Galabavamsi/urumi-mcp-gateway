@@ -14,7 +14,8 @@ store:
   timezone: Asia/Kolkata                 # also passed to woo-mcp as STORE_TZ ("today" = store-local day)
   adminUser: admin
   adminEmail: admin@example.com          # never mailed (no mail relay); only shown in wp-admin
-  # Created only when no live product has the SKU. Names/SKUs/prices match the supplier catalog.
+  # Each seed SKU is created once in the store's life; after that the product belongs to the merchant
+  # (trashing it or changing its SKU is never undone by a restart). Names/SKUs/prices match the supplier catalog.
   seedProducts:
     - name: "Masala Chai Tin (250g)"
       sku: URU-CHAI-250
@@ -39,6 +40,10 @@ secrets:
   wordpress: woo-store-wp       # admin-password + the 8 WordPress salts
   api: woo-store-api            # consumer-key, consumer-secret (WooCommerce REST key of mcp-bot)
   mcpAuth: woo-mcp-auth         # token: bearer the gateway must present to woo-mcp
+
+# Pull credentials for private registries (e.g. private GHCR packages in production). The Secret is
+# created out of band like every other Secret (docs/CONTRACTS.md); the chart only references it.
+imagePullSecrets: []
 
 # --- Public entry point ------------------------------------------------------------------------
 ingress:

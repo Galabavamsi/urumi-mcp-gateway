@@ -18,7 +18,8 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{ include "mcp-server.selectorLabels" . }}
 app.kubernetes.io/component: {{ include "mcp-server.component" . }}
 app.kubernetes.io/part-of: urumi
-app.kubernetes.io/version: {{ .Values.image.tag | trunc 63 | quote }}
+{{- /* toString: `--set image.tag=1234567` (an all-digit short SHA) arrives as a number, which trunc rejects. */}}
+app.kubernetes.io/version: {{ .Values.image.tag | toString | trunc 63 | quote }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version }}
 {{- end -}}

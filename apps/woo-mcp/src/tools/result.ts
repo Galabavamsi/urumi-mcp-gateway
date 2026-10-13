@@ -50,6 +50,23 @@ export async function runTool(tool: string, body: () => Promise<Record<string, u
 /** WooCommerce fields are loosely typed (null, numbers as strings...); normalise to what our schemas promise. */
 export const str = (value: unknown): string => (typeof value === 'string' ? value : value == null ? '' : String(value));
 
+// Characters a reader cannot see but a model still reads: C0/C1 controls (tab and newline are kept here
+// and become spaces below), zero-width and invisible format characters, bidi overrides that reorder text
+// on screen, and the Unicode "tag" block that can spell out hidden ASCII instructions.
+const INVISIBLE = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F​-‏‪-‮⁠-⁤⁦-⁩﻿\u{E0000}-\u{E007F}]/gu;
+
+/**
+ * Text that someone outside our team typed: a guest's checkout note or name (anyone on the internet can
+ * place a guest order), a product description. It goes into the model's context next to write tools, so
+ * nobody may hide instructions in it or flood the context: invisible characters are removed, whitespace
+ * is collapsed to single spaces, and the result is at most `maxLength` characters (ellipsis included).
+ */
+export function untrustedText(value: unknown, maxLength: number): string {
+  const text = str(value).normalize('NFC').replace(INVISIBLE, '').replace(/\s+/g, ' ').trim();
+  const chars = [...text]; // code points, so an emoji or other surrogate pair is never cut in half
+  return chars.length > maxLength ? `${chars.slice(0, maxLength - 1).join('')}…` : text;
+}
+
 export const int = (value: unknown): number | null => {
   const n = typeof value === 'number' ? value : Number.parseInt(str(value), 10);
   return Number.isInteger(n) ? n : null;

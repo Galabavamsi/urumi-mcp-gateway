@@ -6,7 +6,7 @@ release in a second namespace.
 | Object | Kind | Notes |
 |---|---|---|
 | `wordpress` | Deployment (1 replica, `Recreate`) + Service `:8080` + Ingress | Image `images/wordpress`: WordPress 7.1.3, WooCommerce 11.2.1, Storefront 4.6.2 and WP-CLI 2.12.0 baked in. Apache runs as uid 33 on 8080. An init container (`bootstrap`) configures the store before Apache starts. |
-| `wordpress-uploads` | PVC (RWO) | `wp-content/uploads` only. Code is immutable in the image. |
+| `wordpress-uploads` | PVC (RWO) | `wp-content/uploads` only, and Apache never runs PHP from it. Code is immutable in the image (docroot `/srv/wordpress`, on the read-only root filesystem). |
 | `mariadb` | StatefulSet + Service `:3306` | `mariadb:11.8.9`, runs as uid 999, data on a `volumeClaimTemplate`. |
 | `wp-cron` | CronJob (every 5 min) | `wp cron event run --due-now`. Replaces WP-Cron's HTTP loopback, which cannot work in-cluster (`DISABLE_WP_CRON`). |
 | `woo-mcp` | Deployment + Service `:8080` | Our MCP server (`apps/woo-mcp`). Only if `wooMcp.enabled` (default `true`). |
@@ -26,7 +26,7 @@ helm upgrade --install woo-store charts/woo-store -n store -f charts/woo-store/v
 
 # production (k3s on the VPS): images from GHCR, tagged with the git SHA
 helm upgrade --install woo-store charts/woo-store -n store -f charts/woo-store/values-prod.yaml \
-  --set wordpress.image.tag=$SHA --set wooMcp.image.tag=$SHA \
+  --set-string wordpress.image.tag=$SHA --set-string wooMcp.image.tag=$SHA \
   --wait --timeout 10m --rollback-on-failure
 ```
 
@@ -36,13 +36,13 @@ helm upgrade --install woo-store charts/woo-store -n store -f charts/woo-store/v
 |---|---|---|
 | Host / home URL | `http://store.127-0-0-1.sslip.io` | `https://store.urumi.humanslop.in` |
 | TLS | off | cert-manager (`cert-manager.io/cluster-issuer: letsencrypt-prod`) + `tls` block |
-| Images | `urumi/wordpress:dev`, `urumi/woo-mcp:dev` (via `k3d image import`) | `ghcr.io/galabavamsi/urumi-{wordpress,woo-mcp}:<sha>`. The tag is required at deploy time; empty or `latest` fails the render. |
+| Images | `urumi/wordpress:dev`, `urumi/woo-mcp:dev` (via `k3d image import`) | `ghcr.io/galabavamsi/{wordpress,woo-mcp}:<sha>` (plus `imagePullSecrets` if the packages are private). The tag is required at deploy time; empty or `latest` fails the render. |
 | Storage | 1Gi each, default StorageClass | uploads 5Gi, MariaDB 10Gi, `storageClass: local-path` |
 | Resources | small requests | values.yaml defaults |
 | `WP_ENVIRONMENT_TYPE` | `local` | `production` |
 
 To lint the prod file, pass the tags too:
-`helm lint charts/woo-store -f charts/woo-store/values-prod.yaml --set wordpress.image.tag=x --set wooMcp.image.tag=x`.
+`helm lint charts/woo-store -f charts/woo-store/values-prod.yaml --set-string wordpress.image.tag=x --set-string wooMcp.image.tag=x`.
 
 ## Bootstrap (init container, every pod start)
 
@@ -61,8 +61,8 @@ step logs one line (`kubectl -n store logs deploy/wordpress -c bootstrap`):
    - Cash on Delivery on, including for orders that need no shipping;
    - onboarding hidden; shop/cart/checkout/my-account pages present;
    - admin password synced from the Secret;
-   - `mcp-bot` (shop_manager) and its REST API key from Secret `woo-store-api`. The key is upserted in place, so rotation is safe;
-   - the 4 seed products created if their SKUs are missing;
+   - role `urumi_mcp_bot` (only the capabilities the six woo-mcp tools need: no deletes, settings or customers), user `mcp-bot` with that role, and its REST API key from Secret `woo-store-api`. The key is upserted in place, so rotation is safe;
+   - the 4 seed products, each created once per SKU. A seed the merchant later trashes or re-SKUs is never re-created;
    - a final check that HPOS is active, the store is public and COD is on.
 
 Two steps must be explicit because a WP-CLI install never makes the first wp-admin visit. That
@@ -115,4 +115,4 @@ back the image.
 
 - **Rotating a Secret.** The chart does not see Secret contents. After changing one, run `kubectl -n store rollout restart deploy/wordpress deploy/woo-mcp`. The bootstrap then re-syncs the admin password and the API key.
 - **Uninstalling.** `helm uninstall` keeps the data: the uploads PVC has `helm.sh/resource-policy: keep` and the MariaDB PVC is retained. Reinstalling the same release picks both up again. To really wipe the store, also run `kubectl -n store delete pvc wordpress-uploads data-mariadb-0`.
-- **Readiness probe.** `/wp-login.php` loads WordPress and queries the DB, so the pod leaves the Service while the DB is down. Liveness is a TCP check, so a DB outage does not restart WordPress.
+- **Readiness probe.** `/wp-login.php` loads WordPress and queries the DB, so the pod leaves the Service while the DB is down. With TLS on, the probe sends `X-Forwarded-Proto: https` like Traefik does; otherwise WordPress (FORCE_SSL_ADMIN, on for an https home URL) answers it with a redirect. Liveness is a TCP check, so a DB outage does not restart WordPress.

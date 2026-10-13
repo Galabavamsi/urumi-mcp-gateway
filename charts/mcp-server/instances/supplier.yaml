@@ -3,7 +3,7 @@
 #   helm upgrade --install supplier-mcp charts/mcp-server -n mcp-upstreams \
 #     -f charts/mcp-server/values-local.yaml -f charts/mcp-server/instances/supplier.yaml \
 #     --wait --timeout 10m --rollback-on-failure
-# In production use values-prod.yaml instead of values-local.yaml and add --set image.tag=<git-sha>.
+# In production use values-prod.yaml instead of values-local.yaml and add --set-string image.tag=<git-sha>.
 
 # Pinned so the Service is always supplier-mcp.mcp-upstreams.svc.cluster.local:8080 (docs/CONTRACTS.md),
 # whatever the release is called.

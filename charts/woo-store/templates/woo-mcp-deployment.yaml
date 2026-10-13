@@ -21,6 +21,10 @@ spec:
     spec:
       enableServiceLinks: false
       automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       securityContext:
         # The node image's unprivileged "node" user.
         {{- include "woo-store.podSecurityContext" (dict "uid" 1000 "fsGroup" false) | nindent 8 }}

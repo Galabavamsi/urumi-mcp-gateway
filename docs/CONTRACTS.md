@@ -20,7 +20,7 @@ pods matching `{namespace: platform} AND {app.kubernetes.io/component: gateway}`
 |---|---|---|
 | store | `woo-store-db` | `root-password`, `password` (MariaDB user `wordpress`, database `wordpress`) |
 | store | `woo-store-wp` | `admin-password`, `auth-key`, `secure-auth-key`, `logged-in-key`, `nonce-key`, `auth-salt`, `secure-auth-salt`, `logged-in-salt`, `nonce-salt` |
-| store | `woo-store-api` | `consumer-key` (`ck_` + 40 hex), `consumer-secret` (`cs_` + 40 hex) — WooCommerce REST key of the `mcp-bot` shop_manager user |
+| store | `woo-store-api` | `consumer-key` (`ck_` + 40 hex), `consumer-secret` (`cs_` + 40 hex) — WooCommerce REST key of the `mcp-bot` user (role `urumi_mcp_bot`: products and orders only, no deletes, settings or customers) |
 | store + platform | `woo-mcp-auth` | `token` — bearer the gateway sends to woo-mcp (same value in both namespaces) |
 | mcp-upstreams + platform | `supplier-mcp-auth` | `token` — bearer the gateway sends to supplier-mcp |
 | platform | `gateway-postgres` | `password` |
@@ -28,6 +28,7 @@ pods matching `{namespace: platform} AND {app.kubernetes.io/component: gateway}`
 | platform | `gateway-bootstrap-admin` | `email`, `password` (from `.env`) |
 | platform | `gateway-llm` | `anthropic-api-key` (from `.env`) |
 | platform | `gateway-upstream-seed` | `firecrawl-api-key`, `agentmail-api-key` (from `.env`) |
+| store + mcp-upstreams | `ghcr-pull` | VPS only, and only while the GHCR packages are private: type `kubernetes.io/dockerconfigjson` with a `read:packages` token. Created by hand (`kubectl create secret docker-registry ghcr-pull --docker-server=ghcr.io ...`), never by the charts; enabled with the charts' `imagePullSecrets` value |
 
 ## Services (ClusterIP unless noted)
 | Service | Namespace | Port | Reached by |
@@ -45,7 +46,7 @@ pods matching `{namespace: platform} AND {app.kubernetes.io/component: gateway}`
 | `urumi/supplier-mcp:<tag>` | `docker/node-service.Dockerfile --build-arg APP=supplier-mcp` | uid 1000 (node) |
 
 Locally images are loaded with `k3d image import <img> -c urumi` and `imagePullPolicy: IfNotPresent` (never `:latest`).
-In production the registry prefix is `ghcr.io/galabavamsi/` and tags are git SHAs.
+In production the registry prefix is `ghcr.io/galabavamsi/` (replacing `urumi/`) and tags are git SHAs: `ghcr.io/galabavamsi/wordpress`, `ghcr.io/galabavamsi/woo-mcp`, `ghcr.io/galabavamsi/supplier-mcp`. CI must push exactly these names. Pass tags with `--set-string` (a short SHA can be all digits).
 
 ## woo-mcp environment
 | Var | Example | Meaning |

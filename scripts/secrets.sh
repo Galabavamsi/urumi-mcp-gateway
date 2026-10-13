@@ -32,7 +32,15 @@ create_once() { # ns name --from-literal=...
 
 apply_from_env() { # ns name --from-literal=...
   local ns=$1 name=$2; shift 2
-  kubectl -n "$ns" create secret generic "$name" "$@" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  # Server-side apply with our own field manager. A plain (client-side) `kubectl apply` would copy the
+  # whole Secret, values included, into the kubectl.kubernetes.io/last-applied-configuration annotation,
+  # where any tool that hides .data but shows metadata would display it. --force-conflicts takes over
+  # fields an earlier client-side apply owned, so a rotated value never fails with a conflict.
+  kubectl -n "$ns" create secret generic "$name" "$@" --dry-run=client -o yaml \
+    | kubectl apply --server-side --field-manager=urumi-secrets --force-conflicts -f - >/dev/null
+  # Secrets applied by older versions of this script still carry that annotation (with the old values);
+  # remove it. A no-op when it is not there.
+  kubectl -n "$ns" annotate secret "$name" kubectl.kubernetes.io/last-applied-configuration- >/dev/null
   echo "  ~ $ns/$name (from .env)"
 }
 

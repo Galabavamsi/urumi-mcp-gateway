@@ -121,7 +121,7 @@ export class WooClient {
       });
       text = await response.text(); // still under the same signal, so a stalled body also times out
     } catch (err) {
-      throw failed(this.transportError(err, method, route, timeout));
+      throw failed(this.transportError(err, method, route, timeout, options.signal));
     }
 
     const { status } = response;
@@ -142,18 +142,33 @@ export class WooClient {
     };
   }
 
-  private transportError(err: unknown, method: string, route: string, timeout: AbortSignal): WooApiError {
+  private transportError(
+    err: unknown,
+    method: string,
+    route: string,
+    timeout: AbortSignal,
+    callerSignal: AbortSignal | undefined,
+  ): WooApiError {
+    // PHP keeps running after we stop waiting, so a write we gave up on may still have been saved.
+    // Say so: otherwise the model may simply retry and, e.g., publish the same product twice.
+    const maybeApplied =
+      method === 'GET' ? '' : '; the store may still have made this change, so check its current state before trying again';
+    // Ask which signal fired instead of looking at `err`: fetch rejects with the signal's *reason*, and the MCP
+    // SDK aborts with an SdkError ("Connection closed") or a plain string (notifications/cancelled), not an AbortError.
     if (timeout.aborted) {
-      return new WooApiError(null, 'timeout', `${method} ${route} got no answer within ${this.opts.timeoutMs} ms`);
+      return new WooApiError(null, 'timeout', `${method} ${route} got no answer within ${this.opts.timeoutMs} ms${maybeApplied}`);
     }
-    if (err instanceof Error && err.name === 'AbortError') {
+    if (callerSignal?.aborted) {
       return new WooApiError(null, 'cancelled', `${method} ${route} was cancelled by the caller`);
     }
     // undici reports connection problems as TypeError('fetch failed') with the real reason in `cause`:
     // a system error code (ECONNREFUSED, ENOTFOUND) or, for problems fetch itself detects, a message.
     const cause = err instanceof Error ? (err.cause as { code?: string; message?: string } | undefined) : undefined;
     const reason = cause?.code ?? cause?.message ?? (err instanceof Error ? err.message : String(err));
-    return new WooApiError(null, 'unreachable', `cannot reach the store at ${this.baseUrl} (${reason})`);
+    // Refused or unresolvable means the request never reached WordPress; any other failure (a reset, a closed
+    // socket) may have happened after WordPress received it.
+    const neverSent = cause?.code === 'ECONNREFUSED' || cause?.code === 'ENOTFOUND';
+    return new WooApiError(null, 'unreachable', `cannot reach the store at ${this.baseUrl} (${reason})${neverSent ? '' : maybeApplied}`);
   }
 }
 

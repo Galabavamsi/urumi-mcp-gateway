@@ -3,14 +3,18 @@
 //   (a) the storefront lists the seeded products and is not in "coming soon" mode
 //   (b) a guest Cash-on-Delivery checkout through the Store API creates a "processing" order
 //   (c) woo-mcp over real MCP, in BOTH protocol eras (legacy 2025-11-25 and modern 2026-07-28):
-//       tools/list, list_products, create_product (then seen on the storefront), list_orders today,
-//       get_order, update_order_status -> completed
+//       tools/list, list_products, create_product (then seen on the storefront; a retry with the same SKU
+//       is refused), list_orders today, get_order, update_order_status -> completed ("refunded" refused);
+//       mcp-bot's REST key is refused customers, settings and system status (least privilege)
 //   (d) supplier-mcp over real MCP, both eras: list_products, check_stock
 //   (e) both MCP servers answer 401 with no bearer token or a wrong one
 //   (f) NetworkPolicies: only gateway pods in namespace "platform" reach the MCP servers, and no pod
 //       outside the store reaches WordPress or MariaDB
+//   (i) a PHP file in uploads is refused (403), and the code directory is read-only
+//   (j) 12 concurrent page views: none stalls on an idle keep-alive connection
 //   (g) supplier-mcp pod killed -> replaced and Ready; scaled to 0 -> connection refused fast; back to 1
-//   (h) data survives `helm upgrade` with the same values and a WordPress restart
+//   (h) data survives `helm upgrade` with the same values and a WordPress restart, and the restart does
+//       not bring back a seed product the merchant trashed
 //
 // Usage, from the repo root, after scripts/dev-up.sh:
 //   node scripts/e2e-store.mjs           every check, about 2-3 minutes ((g) and (h) restart pods)
@@ -18,12 +22,15 @@
 // On Windows, kubectl and helm run inside WSL (wsl.exe -d Ubuntu --exec ...); elsewhere directly.
 // Exit code 0 means every check passed.
 //
-// Secrets: the MCP bearer tokens are read with kubectl into memory only and never printed.
+// Secrets: the MCP bearer tokens and the WooCommerce key pair are read with kubectl into memory only
+// and never printed.
 // Each run leaves one "E2E Test Kettle" product (SKU E2E-KETTLE-<run id>) and one guest order behind,
 // so you can look at them in wp-admin.
 import { spawn } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+// woo-mcp's own OAuth 1.0a signer (Node 24 runs .ts files directly), to call WooCommerce as mcp-bot in (c6).
+import { signRequest } from '../apps/woo-mcp/src/woo/oauth1.ts';
 
 const STORE_URL = process.env.STORE_URL ?? 'http://store.127-0-0-1.sslip.io';
 const WSL_DISTRO = process.env.WSL_DISTRO ?? 'Ubuntu';
@@ -105,6 +112,8 @@ async function sh(argv, options) {
 }
 
 const kubectl = (...args) => sh(['kubectl', ...args]);
+/** Runs a command in the WordPress web container (uid 33, the same user Apache serves requests as). */
+const inWordpress = (...args) => kubectl('exec', '-n', 'store', 'deploy/wordpress', '-c', 'wordpress', '--', ...args);
 
 /** Reads one Secret key into memory. The value is returned, never logged. */
 async function readSecret(namespace, name, key) {
@@ -420,7 +429,15 @@ async function main() {
     assert(page.includes('E2E Test Kettle') && page.includes('149.00'), 'product page lacks the name or price');
     const shop = await shopHtml();
     assert(shop.includes(product.permalink), 'the new product is not linked from /shop/');
-    return [`created #${product.id} sku=${sku} regular_price=${product.regular_price} (legacy era)`, `GET ${product.permalink} 200 with name and ₹149.00; linked from /shop/`];
+    // A retry (e.g. after a timeout) with the same SKU must not publish a second copy.
+    const retry = await woo.modern.callTool({ name: 'create_product', arguments: { name: 'E2E Test Kettle', regular_price: 149, sku } });
+    const retryText = retry.content?.[0]?.text ?? '';
+    assert(retry.isError && retryText.includes('product_invalid_sku'), `retry with the same SKU: ${retryText}`);
+    return [
+      `created #${product.id} sku=${sku} regular_price=${product.regular_price} (legacy era)`,
+      `GET ${product.permalink} 200 with name and ₹149.00; linked from /shop/`,
+      `retry with the same SKU refused: "${retryText}"`,
+    ];
   });
 
   await check('c4', 'woo-mcp: list_orders {date:"today"} returns the guest order (both eras)', async () => {
@@ -435,19 +452,46 @@ async function main() {
     return lines;
   });
 
-  await check('c5', 'woo-mcp: get_order, then update_order_status -> completed', async () => {
+  await check('c5', 'woo-mcp: get_order, then update_order_status -> completed ("refunded" is refused)', async () => {
     const before = await callTool(woo.modern, 'get_order', { id: state.orderId });
     assert(before.status === 'processing', `status before is ${before.status}`);
     assert(before.payment_method_title === 'Cash on delivery', `payment method ${before.payment_method_title}`);
+    // "refunded" would make WooCommerce record a full refund and email the customer; the tool refuses it.
+    const refund = await woo.modern.callTool({ name: 'update_order_status', arguments: { id: state.orderId, status: 'refunded' } });
+    assert(refund.isError, `status "refunded" was accepted: ${refund.content?.[0]?.text}`);
     const update = await callTool(woo.modern, 'update_order_status', { id: state.orderId, status: 'completed', note: `Delivered (e2e run ${RUN_ID})` });
     assert(update.previous_status === 'processing' && update.status === 'completed' && update.changed, `update returned ${JSON.stringify(update)}`);
     const after = await callTool(woo.legacy, 'get_order', { id: state.orderId });
     assert(after.status === 'completed', `status after is ${after.status}`);
     return [
       `get_order #${before.id} (modern): ${before.status}, ${before.payment_method_title}, ${before.line_items.map((l) => `${l.sku}×${l.quantity}`).join(', ')}, total ₹${before.totals.total}`,
+      `update_order_status status=refunded refused: "${(refund.content?.[0]?.text ?? '').slice(0, 120)}"`,
       `update_order_status (modern): ${update.previous_status} -> ${update.status}, note_added=${update.note_added}`,
       `get_order (legacy): ${after.status}, date_completed=${after.date_completed}`,
     ];
+  });
+
+  await check('c6', "mcp-bot's REST key reads products but is refused customers, settings and system status", async () => {
+    const consumerKey = await readSecret('store', 'woo-store-api', 'consumer-key');
+    const consumerSecret = await readSecret('store', 'woo-store-api', 'consumer-secret');
+    // Read-only GETs only: if the role were wrong, a DELETE test would itself destroy data.
+    const signedGet = async (route) => {
+      const path = `/wp-json/wc/v3${route}`;
+      const { authorization } = signRequest({ method: 'GET', homeUrl: STORE_URL, path, query: [], consumerKey, consumerSecret });
+      const res = await fetch(`${STORE_URL}${path}`, { headers: { authorization }, redirect: 'manual' });
+      const body = await res.json().catch(() => ({}));
+      return { route, status: res.status, code: body.code ?? '' };
+    };
+    // The positive control proves the signature is right, so the refusals below are about capabilities.
+    const products = await signedGet('/products');
+    assert(products.status === 200, `GET /products -> ${products.status} ${products.code}`);
+    const refused = [];
+    for (const route of ['/customers', '/settings', '/system_status']) {
+      const r = await signedGet(route);
+      assert(r.status === 401 || r.status === 403, `GET ${route} -> ${r.status} ${r.code} (expected 401/403)`);
+      refused.push(`${route} ${r.status} ${r.code}`);
+    }
+    return [`GET /products 200 (signed as mcp-bot)`, `refused: ${refused.join(', ')}`];
   });
 
   // --- supplier-mcp ----------------------------------------------------------------------------
@@ -521,6 +565,59 @@ async function main() {
     expectReach(probePods.outsider, Object.values(TARGETS).map((target) => ({ target, reachable: false })), 1),
   );
 
+  // --- (i) immutable code, no PHP from uploads -------------------------------------------------
+  await check('i', 'a PHP file in uploads is refused (403), and the code directory is read-only', async () => {
+    const uploads = '/srv/wordpress/wp-content/uploads';
+    const name = `urumi-e2e-${RUN_ID}.php`;
+    // Plant the file the way an arbitrary-upload bug would: as uid 33, the only user that can write there.
+    await sh(['kubectl', 'exec', '-i', '-n', 'store', 'deploy/wordpress', '-c', 'wordpress', '--', 'sh', '-c', `cat > ${uploads}/${name}`], {
+      input: '<?php echo "urumi-e2e-" . "executed";',
+    });
+    let probeLine;
+    try {
+      const res = await fetch(`${STORE_URL}/wp-content/uploads/${name}`, { redirect: 'manual' });
+      const body = await res.text();
+      assert(!body.includes('urumi-e2e-executed'), 'the uploaded PHP file was EXECUTED');
+      assert(!body.includes('<?php'), 'the uploaded PHP file was served as source');
+      assert(res.status === 403, `GET /wp-content/uploads/${name} -> ${res.status}`);
+      probeLine = `GET /wp-content/uploads/${name} -> 403, neither executed nor shown`;
+    } finally {
+      await inWordpress('rm', '-f', `${uploads}/${name}`);
+    }
+    // WooCommerce's own "deny from all" .htaccess must still work under the narrowed AllowOverride.
+    const wcLogs = await fetch(`${STORE_URL}/wp-content/uploads/wc-logs/index.html`, { redirect: 'manual' });
+    assert(wcLogs.status === 403, `GET /wp-content/uploads/wc-logs/index.html -> ${wcLogs.status}`);
+    // The code is on the read-only root filesystem (not on a writable mount) and uid 33 cannot change it.
+    const touch = await run(['kubectl', 'exec', '-n', 'store', 'deploy/wordpress', '-c', 'wordpress', '--', 'touch', '/srv/wordpress/urumi-e2e-touch']);
+    assert(touch.code !== 0, 'uid 33 could create a file in /srv/wordpress');
+    const mounts = (await inWordpress('cat', '/proc/mounts')).split('\n').map((line) => line.split(' '));
+    const root = mounts.find((m) => m[1] === '/');
+    const docroot = mounts.find((m) => m[1] === '/srv/wordpress');
+    assert(!docroot, `/srv/wordpress is a separate mount: ${docroot?.join(' ')}`);
+    assert(root?.[3]?.split(',').includes('ro'), `the root filesystem is not read-only: ${root?.join(' ')}`);
+    return [
+      probeLine,
+      'GET /wp-content/uploads/wc-logs/index.html -> 403 (WooCommerce .htaccess still honoured)',
+      `/srv/wordpress is on the root filesystem (${root[2]} ${root[3].split(',')[0]}); touch as uid 33 refused`,
+    ];
+  });
+
+  await check('j', '12 concurrent page views: none stalls on an idle keep-alive connection', async () => {
+    const times = await Promise.all(
+      Array.from({ length: 12 }, async (_, i) => {
+        const started = Date.now();
+        const res = await fetch(`${STORE_URL}/?e2e=${RUN_ID}-${i}`);
+        await res.text();
+        assert(res.status === 200, `GET /?e2e=... -> ${res.status}`);
+        return Date.now() - started;
+      }),
+    );
+    times.sort((a, b) => a - b);
+    // With Apache keep-alive on, the slowest requests waited the full 5 s KeepAliveTimeout for a worker.
+    assert(times.at(-1) < 4000, `slowest page view took ${times.at(-1)} ms`);
+    return `12 parallel GET / through Traefik, ms: ${times.join(', ')}`;
+  });
+
   if (QUICK) return;
 
   // --- (g) pod kill and scale to zero -----------------------------------------------------------
@@ -567,15 +664,35 @@ async function main() {
     return [`release woo-store now at revision ${revision}; pods unchanged: ${after.map((p) => p.name).join(', ')}`, `order #${order.id} still ${order.status}`];
   });
 
-  await check('h2', 'WordPress restart (rollout restart) keeps products and orders', async () => {
-    const [old] = await pods('store', 'app.kubernetes.io/name=wordpress');
-    await kubectl('rollout', 'restart', 'deploy/wordpress', '-n', 'store');
-    await sh(['kubectl', 'rollout', 'status', 'deploy/wordpress', '-n', 'store', '--timeout=300s'], { timeoutMs: 320_000 });
-    const [now] = await pods('store', 'app.kubernetes.io/name=wordpress');
-    assert(now && now.name !== old.name, 'the wordpress pod was not replaced');
-    const bootstrapLog = await kubectl('logs', '-n', 'store', now.name, '-c', 'bootstrap');
-    const seedLine = bootstrapLog.split('\n').find((l) => l.includes('seed products')) ?? '';
-    assert(seedLine.includes('none created'), `bootstrap re-seeded: "${seedLine}"`);
+  await check('h2', 'WordPress restart keeps products and orders, and does not bring back a seed the merchant trashed', async () => {
+    // The merchant trashes a seed product (as from wp-admin; here with WP-CLI in the web container).
+    const trashedSku = 'URU-TURM-200';
+    const [seed] = (await callTool(woo.legacy, 'list_products', { sku: trashedSku })).products;
+    assert(seed, `${trashedSku} not found before the restart`);
+    // wp_trash_post() is what wp-admin's "Trash" link calls (`wp post delete` refuses to trash products).
+    await inWordpress('wp', 'eval', `if ( ! wp_trash_post( ${seed.id} ) ) { WP_CLI::error( 'could not trash #${seed.id}' ); }`);
+    // wp_untrash_post() restores to draft since WP 5.6 unless told to use the previous status.
+    const untrash = `add_filter( 'wp_untrash_post_status', 'wp_untrash_post_set_previous_status', 10, 3 ); wp_untrash_post( ${seed.id} );`;
+    let restored = false;
+    let old;
+    let now;
+    let seedLine;
+    try {
+      [old] = await pods('store', 'app.kubernetes.io/name=wordpress');
+      await kubectl('rollout', 'restart', 'deploy/wordpress', '-n', 'store');
+      await sh(['kubectl', 'rollout', 'status', 'deploy/wordpress', '-n', 'store', '--timeout=300s'], { timeoutMs: 320_000 });
+      [now] = await pods('store', 'app.kubernetes.io/name=wordpress');
+      assert(now && now.name !== old.name, 'the wordpress pod was not replaced');
+      const bootstrapLog = await kubectl('logs', '-n', 'store', now.name, '-c', 'bootstrap');
+      seedLine = bootstrapLog.split('\n').find((l) => l.includes('seed products')) ?? '';
+      assert(seedLine.includes('none created'), `bootstrap re-seeded: "${seedLine}"`);
+      const again = await callTool(woo.legacy, 'list_products', { sku: trashedSku });
+      assert(again.count === 0, `the trashed seed ${trashedSku} came back: ${JSON.stringify(again.products)}`);
+      await inWordpress('wp', 'eval', untrash);
+      restored = true;
+    } finally {
+      if (!restored) await inWordpress('wp', 'eval', untrash).catch(() => {});
+    }
     const shop = await shopHtml();
     assert(seedProductsListed(shop).length === SEED_PRODUCTS.length, 'seed products missing after restart');
     assert(shop.includes(state.kettle.permalink), 'the e2e kettle is missing after restart');
@@ -583,7 +700,11 @@ async function main() {
     assert(order.status === 'completed', `order #${state.orderId} is ${order.status}`);
     const kettle = await callTool(woo.legacy, 'list_products', { sku: state.kettle.sku });
     assert(kettle.count === 1, `kettle lookup by SKU found ${kettle.count}`);
-    return [`${old.name} -> ${now.name}; bootstrap: "${seedLine.trim()}"`, `/shop/ still lists 4 seeds + kettle #${state.kettle.id}; order #${order.id} still ${order.status}`];
+    return [
+      `${old.name} -> ${now.name}; bootstrap: "${seedLine.trim()}"`,
+      `seed ${trashedSku} (#${seed.id}) trashed before the restart stayed trashed; restored from the trash afterwards`,
+      `/shop/ still lists 4 seeds + kettle #${state.kettle.id}; order #${order.id} still ${order.status}`,
+    ];
   });
 }
 

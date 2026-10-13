@@ -113,7 +113,27 @@ describe('WooClient', () => {
     expect((await errorOf(client.get('/orders'))).toToolText()).toBe('WooCommerce timeout: GET /orders got no answer within 30 ms');
   });
 
-  it('reports a cancelled MCP request as cancelled, not as a timeout', async () => {
+  it('warns that a write that timed out may still have been applied', async () => {
+    const { client } = clientWith(
+      ({ init }) =>
+        new Promise<Response>((_, reject) => {
+          init.signal!.addEventListener('abort', () => reject(init.signal!.reason));
+        }),
+      { timeoutMs: 30 },
+    );
+    expect((await errorOf(client.post('/products', { name: 'Kettle' }))).toToolText()).toBe(
+      'WooCommerce timeout: POST /products got no answer within 30 ms; the store may still have made this change, ' +
+        'so check its current state before trying again',
+    );
+  });
+
+  // fetch rejects with the abort *reason*. The MCP SDK aborts a handler with an SdkError when the connection
+  // closes and with the client's reason string on notifications/cancelled; a bare abort() gives an AbortError.
+  it.each([
+    ['an SdkError (connection closed)', Object.assign(new Error('Connection closed'), { name: 'SdkError' })],
+    ['a reason string (notifications/cancelled)', 'client cancelled'],
+    ['no reason (AbortError)', undefined],
+  ])('reports an MCP request aborted with %s as cancelled, not as unreachable', async (_label, reason) => {
     const { client } = clientWith(
       ({ init }) =>
         new Promise<Response>((_, reject) => {
@@ -122,7 +142,7 @@ describe('WooClient', () => {
     );
     const controller = new AbortController();
     const pending = client.get('/orders', {}, controller.signal);
-    controller.abort();
+    controller.abort(reason);
     expect((await errorOf(pending)).code).toBe('cancelled');
   });
 
@@ -132,6 +152,17 @@ describe('WooClient', () => {
     });
     expect((await errorOf(client.get('/orders'))).toToolText()).toBe(
       'WooCommerce unreachable: cannot reach the store at http://wordpress.store.svc.cluster.local:8080 (ECONNREFUSED)',
+    );
+    // Refused = never sent, so even a write needs no "may have been applied" warning.
+    expect((await errorOf(client.post('/products', {}))).message).not.toMatch(/may still have made this change/);
+  });
+
+  it('warns when a write lost its connection after it may have reached the store', async () => {
+    const { client } = clientWith(() => {
+      throw new TypeError('fetch failed', { cause: Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }) });
+    });
+    expect((await errorOf(client.put('/orders/42', { status: 'completed' }))).message).toMatch(
+      /\(ECONNRESET\); the store may still have made this change/,
     );
   });
 });

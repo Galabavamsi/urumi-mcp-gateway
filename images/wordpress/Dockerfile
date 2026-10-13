@@ -7,7 +7,8 @@
 #   * Code is immutable. WordPress core, plugins, themes and wp-config.php are copied in at BUILD time
 #     and owned by root, so the web server (uid 33) can read but never modify them. The stock image
 #     instead copies core into a volume and writes wp-config.php at container start; we skip that.
-#   * Only wp-content/uploads is persistent (a PVC in Kubernetes).
+#   * Only wp-content/uploads is persistent (a PVC in Kubernetes) and writable, and Apache never runs
+#     PHP from it (apache/000-default.conf).
 #   * Runs as www-data (uid/gid 33). Apache listens on 8080 because a non-root process cannot bind :80.
 #   * Every download is pinned to a version AND a checksum, so a rebuild gives the same bytes.
 #
@@ -75,20 +76,24 @@ LABEL org.opencontainers.image.title="urumi-wordpress" \
       org.opencontainers.image.description="WordPress 7.1.3 + WooCommerce ${WOOCOMMERCE_VERSION} + Storefront ${STOREFRONT_VERSION} + WP-CLI ${WP_CLI_VERSION}, non-root Apache on :8080" \
       org.opencontainers.image.source="https://github.com/Galabavamsi/urumi-mcp-gateway"
 
-# The base image ships /var/www/html (a VOLUME) as a world-writable (1777) empty docroot. Reset it to
-# root-owned 0755 first, then copy the assembled docroot in; COPY --from keeps the ownership and
-# modes set in the assemble stage. (BuildKit, Docker's default builder, keeps RUN changes inside a
-# declared VOLUME; the legacy builder would silently discard them.)
+# The docroot is /srv/wordpress, not the stock /var/www/html. The base image declares /var/www/html
+# a VOLUME, and containerd (k3s) turns an image VOLUME into a read-write mount that it fills with a
+# copy of the image's files on EVERY container start: 187 MB per start (every 5 minutes for wp-cron),
+# writable, and outside readOnlyRootFilesystem. A Dockerfile cannot drop an inherited VOLUME, so we
+# leave it empty: remove the base image's 1777 wp-content skeleton and make it root-owned 0755.
+# (BuildKit, Docker's default builder, keeps RUN changes inside a declared VOLUME.)
 RUN rm -rf /var/www/html/wp-content \
  && chown root:root /var/www/html \
  && chmod 0755 /var/www/html
-COPY --from=assemble /usr/src/wordpress/ /var/www/html/
+# COPY --from keeps the ownership and modes set in the assemble stage.
+COPY --from=assemble /usr/src/wordpress/ /srv/wordpress/
 
 # WP-CLI phar plus a tiny wrapper that gives CLI runs more memory than web requests.
 COPY --from=assemble /build/wp-cli.phar /usr/local/lib/wp-cli/wp-cli.phar
 COPY bin/wp /usr/local/bin/wp
 
-# Apache: listen on 8080, small prefork pool, quiet probe logging, no version banner.
+# Apache: listen on 8080, docroot /srv/wordpress (no PHP in uploads), small prefork pool, no
+# keep-alive, quiet probe logging, no version banner.
 COPY apache/ports.conf /etc/apache2/ports.conf
 COPY apache/000-default.conf /etc/apache2/sites-available/000-default.conf
 COPY apache/mpm_prefork.conf /etc/apache2/mods-available/mpm_prefork.conf
@@ -106,12 +111,15 @@ RUN set -eux; \
     a2enconf zz-urumi; \
     chmod 0755 /usr/local/bin/wp /usr/local/bin/urumi-bootstrap.sh; \
     chmod 0644 /usr/local/lib/wp-cli/wp-cli.phar /usr/local/lib/urumi/*; \
+    # Fail the build, not the pod, on a broken Apache config.
+    apache2ctl -t; \
     # Sanity check that the phar runs (the build runs as root, hence --allow-root just here).
-    wp --allow-root --version
+    wp --allow-root --path=/srv/wordpress --version
 
 # Numeric user so Kubernetes' runAsNonRoot check can verify it without resolving a name.
 USER 33:33
-WORKDIR /var/www/html
+# WP-CLI finds WordPress from the working directory: the bootstrap and wp-cron call `wp` without --path.
+WORKDIR /srv/wordpress
 EXPOSE 8080
 
 # Bypass the stock docker-entrypoint.sh: its only jobs (copy core into the volume, generate

@@ -1,7 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { UserInputError } from '../errors.ts';
-import { int, READ_ONLY, runTool, str, type ToolDeps } from './result.ts';
+import { int, READ_ONLY, runTool, str, untrustedText, type ToolDeps } from './result.ts';
 
 /** The parts of a WooCommerce product we read (GET /products). Everything is optional: never trust the shape. */
 interface WooProduct {
@@ -66,13 +66,9 @@ function toSummary(p: WooProduct): z.infer<typeof productSummary> {
   };
 }
 
-/** Product descriptions are HTML; the model needs the words, not the markup. */
+/** Product descriptions are HTML written by store members; the model needs the words, not the markup. */
 function plainText(html: unknown, maxLength = 1000): string {
-  const text = str(html)
-    .replace(/<[^>]*>/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text;
+  return untrustedText(str(html).replace(/<[^>]*>/g, ' '), maxLength);
 }
 
 const productDetail = productSummary.extend({
@@ -170,7 +166,8 @@ export function registerProductTools(server: McpServer, deps: ToolDeps): void {
       description:
         'Create a new simple product in our store. It is published (visible on the storefront) unless you set ' +
         'status to draft or private. Prices are in the store currency (INR); give regular_price as a number like 499. ' +
-        'Not idempotent: each call creates another product, so check with list_products (sku) before retrying.',
+        'Not idempotent: each call creates another product, so after a timeout check with list_products ' +
+        '(sku, or search by name) before retrying.',
       inputSchema: z.object({
         name: z.string().trim().min(1).max(200).describe('Product name shown to shoppers'),
         regular_price: z
@@ -178,7 +175,16 @@ export function registerProductTools(server: McpServer, deps: ToolDeps): void {
           .describe('Price in the store currency, e.g. 499 or "499.00" (no currency symbol)'),
         description: z.string().max(5000).optional().describe('Long description (plain text or simple HTML)'),
         short_description: z.string().max(1000).optional().describe('One or two sentences shown near the price'),
-        sku: z.string().trim().min(1).max(100).optional().describe('Unique stock-keeping unit, e.g. URU-TOTE-01'),
+        sku: z
+          .string()
+          .trim()
+          .min(1)
+          .max(100)
+          .optional()
+          .describe(
+            'Unique stock-keeping unit, e.g. URU-TOTE-01. Recommended: WooCommerce rejects a duplicate SKU ' +
+              '(400 product_invalid_sku), so a retry cannot create a second copy.',
+          ),
         status: z.enum(['publish', 'draft', 'private']).default('publish').describe('Default publish'),
         manage_stock: z.boolean().optional().describe('Track stock for this product (implied when stock_quantity is set)'),
         stock_quantity: z.int().min(0).optional().describe('Units in stock'),

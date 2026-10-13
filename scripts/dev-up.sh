@@ -108,16 +108,17 @@ done
 # No --reuse-values: the values files are the whole truth, so a demo toggle set by hand earlier
 # (e.g. supplier DEMO_SLOW_TOOL) is reset to its file value here.
 step "helm: woo-store (namespace store)"
+# --set-string, not --set: a short SHA can be all digits (e.g. 1234567), which --set would turn into a number.
 helm upgrade --install woo-store charts/woo-store -n store \
   -f charts/woo-store/values-local.yaml \
-  --set wordpress.image.tag="$TAG" --set wooMcp.image.tag="$TAG" \
+  --set-string wordpress.image.tag="$TAG" --set-string wooMcp.image.tag="$TAG" \
   "${HELM_FLAGS[@]}" >/dev/null
 helm status woo-store -n store | sed -n 's/^\(REVISION\|STATUS\):/  \1:/p'
 
 step "helm: supplier-mcp (namespace mcp-upstreams)"
 helm upgrade --install supplier-mcp charts/mcp-server -n mcp-upstreams \
   -f charts/mcp-server/values-local.yaml -f charts/mcp-server/instances/supplier.yaml \
-  --set image.tag="$TAG" \
+  --set-string image.tag="$TAG" \
   "${HELM_FLAGS[@]}" >/dev/null
 helm status supplier-mcp -n mcp-upstreams | sed -n 's/^\(REVISION\|STATUS\):/  \1:/p'
 

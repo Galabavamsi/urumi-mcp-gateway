@@ -69,6 +69,25 @@ changed per pod, every restart would log everyone out and break checkout nonces.
 {{- end }}
 {{- end }}
 
+{{/*
+httpGet of the WordPress startup and readiness probes. /wp-login.php boots WordPress and queries the
+database (a DB outage returns 500) and is cheap. With an https home URL WordPress turns on
+FORCE_SSL_ADMIN, so a plain-HTTP request to wp-login.php gets a 302 to https://<home>/wp-admin/, which
+the kubelet logs as a probe warning every period without ever seeing the page. Traefik terminates TLS
+and sends X-Forwarded-Proto: https; the probe sends the same header, which the image's wp-config.php
+turns into HTTPS=on, so the probe gets the real 200 login page.
+*/}}
+{{- define "woo-store.wordpressProbeHttpGet" -}}
+httpGet:
+  path: /wp-login.php
+  port: http
+  {{- if .Values.ingress.tls.enabled }}
+  httpHeaders:
+    - name: X-Forwarded-Proto
+      value: https
+  {{- end }}
+{{- end }}
+
 {{/* Container hardening shared by every container in the chart (all run as non-root users). */}}
 {{- define "woo-store.containerSecurityContext" -}}
 allowPrivilegeEscalation: false

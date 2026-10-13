@@ -19,6 +19,36 @@ if ( ! defined( 'WP_CLI' ) || ! class_exists( 'WooCommerce' ) ) {
 // that a human created in wp-admin.
 const URUMI_API_KEY_DESCRIPTION = 'woo-mcp (managed by urumi-bootstrap from Secret woo-store-api)';
 const URUMI_BOT_LOGIN           = 'mcp-bot';
+const URUMI_BOT_ROLE            = 'urumi_mcp_bot';
+
+/**
+ * Exactly what woo-mcp's six tools need, and nothing else. (shop_manager, the obvious choice, can also
+ * delete orders and products, change WooCommerce and payment settings, run system-status tools and
+ * list/create/edit customers: the REST API key would carry all of that.)
+ *   list_products, get_product   read_private_products (drafts and private products too)
+ *   create_product               publish_products (WooCommerce's REST "create" check) + edit_products
+ *   list_orders, get_order       read_private_shop_orders
+ *   update_order_status          edit_shop_order, which under HPOS needs edit_others_shop_orders plus
+ *                                edit_published_ or edit_private_shop_orders depending on the status
+ *   order note                   publish_shop_orders (the REST "create" check for notes)
+ */
+const URUMI_BOT_CAPS = array(
+	'read',
+	'read_private_products',
+	'edit_products',
+	'edit_others_products',
+	'edit_published_products',
+	'publish_products',
+	'read_private_shop_orders',
+	'edit_shop_orders',
+	'edit_others_shop_orders',
+	'edit_published_shop_orders',
+	'edit_private_shop_orders',
+	'publish_shop_orders',
+);
+
+/** Capabilities the bot must never have; urumi_verify() fails the pod if it does. */
+const URUMI_BOT_FORBIDDEN_CAPS = array( 'manage_woocommerce', 'list_users', 'edit_users', 'create_customers', 'delete_shop_orders', 'delete_products' );
 
 function urumi_log( string $step, string $message ): void {
 	WP_CLI::log( sprintf( '[bootstrap] %s: %s', $step, $message ) );
@@ -157,9 +187,29 @@ function urumi_ensure_admin_password(): void {
 	urumi_log( 'admin user', "'{$login}' password updated from Secret" );
 }
 
+/** Creates the bot role, or brings its capabilities back to exactly URUMI_BOT_CAPS. */
+function urumi_ensure_bot_role(): void {
+	$role = get_role( URUMI_BOT_ROLE );
+	if ( ! $role ) {
+		add_role( URUMI_BOT_ROLE, 'MCP bot (woo-mcp)', array_fill_keys( URUMI_BOT_CAPS, true ) );
+		urumi_log( 'mcp-bot role', 'created ' . URUMI_BOT_ROLE . ' with ' . count( URUMI_BOT_CAPS ) . ' capabilities' );
+		return;
+	}
+	$added   = array_diff( URUMI_BOT_CAPS, array_keys( array_filter( $role->capabilities ) ) );
+	$removed = array_diff( array_keys( $role->capabilities ), URUMI_BOT_CAPS );
+	foreach ( $added as $cap ) {
+		$role->add_cap( $cap );
+	}
+	foreach ( $removed as $cap ) {
+		$role->remove_cap( $cap );
+	}
+	$changes = array_merge( array_map( fn( $cap ) => "+{$cap}", $added ), array_map( fn( $cap ) => "-{$cap}", $removed ) );
+	urumi_log( 'mcp-bot role', $changes ? 'updated ' . implode( ' ', $changes ) : 'unchanged (' . count( URUMI_BOT_CAPS ) . ' capabilities)' );
+}
+
 /**
- * The bot user that woo-mcp acts as. shop_manager can manage products and orders but not plugins,
- * users or site settings. Its password is random and never used: it only ever authenticates with
+ * The bot user that woo-mcp acts as, with the role above: products and orders only, no deletes, no
+ * customers, no settings. Its password is random and never used: it only ever authenticates with
  * the REST API key below.
  */
 function urumi_ensure_bot_user(): int {
@@ -171,20 +221,21 @@ function urumi_ensure_bot_user(): int {
 				'user_pass'    => wp_generate_password( 64, true, true ),
 				'user_email'   => 'mcp-bot@store.invalid',
 				'display_name' => 'MCP bot (woo-mcp)',
-				'role'         => 'shop_manager',
+				'role'         => URUMI_BOT_ROLE,
 			)
 		);
 		if ( is_wp_error( $id ) ) {
 			WP_CLI::error( 'could not create mcp-bot: ' . $id->get_error_message() );
 		}
-		urumi_log( 'mcp-bot user', "created #{$id} with role shop_manager" );
+		urumi_log( 'mcp-bot user', "created #{$id} with role " . URUMI_BOT_ROLE );
 		return $id;
 	}
-	if ( array( 'shop_manager' ) !== array_values( $bot->roles ) ) {
-		$bot->set_role( 'shop_manager' );
-		urumi_log( 'mcp-bot user', "#{$bot->ID} role reset to shop_manager" );
+	// Also migrates stores whose bot was created as shop_manager by an earlier version of this script.
+	if ( array( URUMI_BOT_ROLE ) !== array_values( $bot->roles ) ) {
+		$bot->set_role( URUMI_BOT_ROLE );
+		urumi_log( 'mcp-bot user', "#{$bot->ID} role reset to " . URUMI_BOT_ROLE );
 	} else {
-		urumi_log( 'mcp-bot user', "#{$bot->ID} unchanged (shop_manager)" );
+		urumi_log( 'mcp-bot user', "#{$bot->ID} unchanged (" . URUMI_BOT_ROLE . ')' );
 	}
 	return $bot->ID;
 }
@@ -246,30 +297,39 @@ function urumi_ensure_api_key( int $user_id ): void {
 }
 
 /**
- * Seed catalog (same names/SKUs/prices as the supplier catalog). A product is created only when no
- * live product has its SKU, so re-runs never duplicate and a partly-seeded store heals itself.
+ * Seed catalog (same names/SKUs/prices as the supplier catalog). Each seed SKU is applied ONCE in the
+ * store's life and remembered in the option urumi_seeded_skus. After that the product belongs to the
+ * merchant: if they trash it or change its SKU, a restart must not bring it back. A seed SKU added to
+ * the values later is still created once.
  */
 function urumi_seed_products(): void {
 	$products = json_decode( urumi_env( 'STORE_SEED_PRODUCTS', '[]' ), true );
 	if ( ! is_array( $products ) ) {
 		WP_CLI::error( 'STORE_SEED_PRODUCTS is not a JSON array' );
 	}
+	$seeded  = (array) get_option( 'urumi_seeded_skus', array() );
 	$created = array();
 	foreach ( $products as $seed ) {
-		if ( wc_get_product_id_by_sku( $seed['sku'] ) ) {
+		if ( in_array( $seed['sku'], $seeded, true ) ) {
 			continue;
 		}
-		$product = new WC_Product_Simple();
-		$product->set_name( $seed['name'] );
-		$product->set_sku( $seed['sku'] );
-		$product->set_regular_price( (string) $seed['price'] ); // WooCommerce stores prices as strings.
-		$product->set_short_description( $seed['description'] ?? '' );
-		$product->set_status( 'publish' );
-		$product->save();
-		$created[] = $seed['sku'];
+		// The SKU check also covers stores seeded before the option existed, and a crash mid-loop.
+		if ( ! wc_get_product_id_by_sku( $seed['sku'] ) ) {
+			$product = new WC_Product_Simple();
+			$product->set_name( $seed['name'] );
+			$product->set_sku( $seed['sku'] );
+			$product->set_regular_price( (string) $seed['price'] ); // WooCommerce stores prices as strings.
+			$product->set_short_description( $seed['description'] ?? '' );
+			$product->set_status( 'publish' );
+			$product->save();
+			$created[] = $seed['sku'];
+		}
+		$seeded[] = $seed['sku'];
+		// Saved after each product (autoload off: only the bootstrap reads it), so a crash never duplicates.
+		update_option( 'urumi_seeded_skus', $seeded, false );
 	}
 	$present = count( $products ) - count( $created );
-	urumi_log( 'seed products', ( $created ? 'created ' . implode( ', ', $created ) : 'none created' ) . "; {$present} already present" );
+	urumi_log( 'seed products', ( $created ? 'created ' . implode( ', ', $created ) : 'none created' ) . "; {$present} already seeded" );
 }
 
 /** Fail the bootstrap (and so the pod) if the end state is not what the store needs. */
@@ -284,10 +344,16 @@ function urumi_verify(): void {
 	if ( 'yes' !== WC()->payment_gateways()->payment_gateways()['cod']->get_option( 'enabled' ) ) {
 		$problems[] = 'Cash on Delivery is disabled';
 	}
+	// user_can() also runs WooCommerce's user_has_cap filters, so this is what the REST API will allow.
+	$bot      = get_user_by( 'login', URUMI_BOT_LOGIN );
+	$too_much = array_filter( URUMI_BOT_FORBIDDEN_CAPS, fn( $cap ) => user_can( $bot, $cap ) );
+	if ( $too_much ) {
+		$problems[] = URUMI_BOT_LOGIN . ' has capabilities it must not have: ' . implode( ', ', $too_much );
+	}
 	if ( $problems ) {
 		WP_CLI::error( 'verification failed: ' . implode( '; ', $problems ) );
 	}
-	urumi_log( 'verify', 'HPOS active, storefront public, Cash on Delivery enabled' );
+	urumi_log( 'verify', 'HPOS active, storefront public, Cash on Delivery enabled, ' . URUMI_BOT_LOGIN . ' least-privilege' );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -334,6 +400,7 @@ urumi_ensure_cod();
 urumi_skip_onboarding();
 urumi_ensure_pages();
 urumi_ensure_admin_password();
+urumi_ensure_bot_role();
 urumi_ensure_api_key( urumi_ensure_bot_user() );
 urumi_seed_products();
 urumi_verify();

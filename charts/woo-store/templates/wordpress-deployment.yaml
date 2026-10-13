@@ -28,6 +28,10 @@ spec:
       enableServiceLinks: false
       # WordPress never talks to the Kubernetes API, so it gets no token to steal.
       automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       securityContext:
         {{- include "woo-store.podSecurityContext" (dict "uid" 33 "fsGroup" true) | nindent 8 }}
       initContainers:
@@ -66,7 +70,7 @@ spec:
           volumeMounts:
             # WooCommerce's installer creates its log and download-protection folders in uploads.
             - name: uploads
-              mountPath: /var/www/html/wp-content/uploads
+              mountPath: /srv/wordpress/wp-content/uploads
             - name: tmp
               mountPath: /tmp
       containers:
@@ -81,20 +85,16 @@ spec:
                 name: wordpress-env
           env:
             {{- include "woo-store.wordpressSecretEnv" . | nindent 12 }}
-          # /wp-login.php boots WordPress and queries the database (a DB outage returns 500), never
-          # redirects, and is cheap. Startup gives the first, cold-cache requests time; after that
-          # readiness takes the pod out of the Service while WordPress cannot serve.
+          # Both probe /wp-login.php (why, and why with X-Forwarded-Proto under TLS: woo-store.wordpressProbeHttpGet
+          # in _helpers.tpl). Startup gives the first, cold-cache requests time; after that readiness takes
+          # the pod out of the Service while WordPress cannot serve.
           startupProbe:
-            httpGet:
-              path: /wp-login.php
-              port: http
+            {{- include "woo-store.wordpressProbeHttpGet" . | nindent 12 }}
             periodSeconds: 5
             timeoutSeconds: 5
             failureThreshold: 24
           readinessProbe:
-            httpGet:
-              path: /wp-login.php
-              port: http
+            {{- include "woo-store.wordpressProbeHttpGet" . | nindent 12 }}
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 3
@@ -112,7 +112,7 @@ spec:
             {{- include "woo-store.containerSecurityContext" . | nindent 12 }}
           volumeMounts:
             - name: uploads
-              mountPath: /var/www/html/wp-content/uploads
+              mountPath: /srv/wordpress/wp-content/uploads
             # The root filesystem is read-only; these are the only other places Apache/PHP write:
             # PHP sessions and upload temp files, Apache's pid file and its lock files.
             - name: tmp
