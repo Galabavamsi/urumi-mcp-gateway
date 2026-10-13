@@ -5,9 +5,10 @@
   "type": "module",
   "description": "Team MCP gateway: MCP client to every registered upstream, one aggregated MCP endpoint, dashboard REST API and chat agent",
   "scripts": {
-    "build": "node ../../scripts/build-app.mjs src/server.ts dist/server.mjs",
+    "build": "node ../../scripts/build-app.mjs src/server.ts dist/server.mjs && node scripts/copy-assets.mjs",
     "typecheck": "tsc -p tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.133.0",
