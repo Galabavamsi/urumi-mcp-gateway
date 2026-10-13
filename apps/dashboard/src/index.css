@@ -1,0 +1,167 @@
+@import "tailwindcss";
+
+/*
+  Visual direction: an operations console for a shop team. Calm ink on cool paper; the only loud colour
+  on screen is status (connected / unreachable / connecting / disabled), shown as a "lamp" like on a
+  switchboard. Identifiers you copy or type (slugs, tool names, keys, commands) are set in monospace.
+  Fonts are system fonts only: the CSP allows no third-party font hosts, and nothing is downloaded.
+*/
+@theme {
+  --color-paper: #eef1f3;
+  --color-surface: #ffffff;
+  --color-sunken: #f5f7f8;
+  --color-ink: #16212a;
+  --color-ink-2: #4a5763;
+  --color-ink-3: #5f6b76;
+  --color-line: #d5dbe0;
+  --color-line-strong: #b4bec7;
+
+  --color-accent: #0b5e7e;
+  --color-accent-strong: #084a63;
+  --color-accent-soft: #e0eef3;
+
+  --color-ok: #15703f;
+  --color-ok-soft: #e1f2e8;
+  --color-ok-lamp: #1f9d57;
+  --color-bad: #b42318;
+  --color-bad-soft: #fce8e6;
+  --color-bad-lamp: #e5483b;
+  --color-warn: #8f5300;
+  --color-warn-soft: #fbefd9;
+  --color-warn-lamp: #e89a1c;
+  --color-off: #5a6570;
+  --color-off-soft: #e7ebee;
+  --color-off-lamp: #9aa5af;
+  --color-deny: #6b3fa0;
+  --color-deny-soft: #efe8f7;
+
+  --font-sans: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  /* DIN-style display face: Bahnschrift ships with Windows, DIN Alternate with macOS. */
+  --font-display: Bahnschrift, "DIN Alternate", "D-DIN", "Roboto Condensed", "Arial Narrow", sans-serif;
+  --font-mono: "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", Menlo, ui-monospace, monospace;
+
+  --animate-lamp: lamp 1.2s ease-in-out infinite;
+  @keyframes lamp {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+  }
+}
+
+@layer base {
+  html {
+    background: var(--color-paper);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: 15px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body {
+    min-height: 100vh;
+  }
+
+  /* One visible focus style everywhere, keyboard only. */
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background: var(--color-accent-soft);
+  }
+
+  code,
+  kbd,
+  pre {
+    font-family: var(--font-mono);
+  }
+
+  dialog::backdrop {
+    background: rgb(22 33 42 / 0.45);
+  }
+}
+
+@layer components {
+  .page-title {
+    @apply font-display text-[1.75rem] leading-tight font-semibold text-ink;
+  }
+
+  .section-title {
+    @apply font-display text-[1.0625rem] leading-snug font-semibold text-ink;
+  }
+
+  .panel {
+    @apply rounded-[10px] border border-line bg-surface;
+  }
+
+  .btn {
+    @apply inline-flex h-9 shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-md border px-3.5 text-sm font-medium whitespace-nowrap transition-colors disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-primary {
+    @apply border-ink bg-ink text-white hover:bg-[#26343f];
+  }
+  .btn-secondary {
+    @apply border-line-strong bg-surface text-ink hover:bg-sunken;
+  }
+  .btn-danger {
+    @apply border-bad bg-bad text-white hover:bg-[#9a1d13];
+  }
+  .btn-ghost {
+    @apply border-transparent bg-transparent text-ink-2 hover:bg-sunken hover:text-ink;
+  }
+  .btn-sm {
+    @apply h-8 px-2.5 text-[13px];
+  }
+
+  .icon-btn {
+    @apply inline-flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-md text-ink-2 transition-colors hover:bg-sunken hover:text-ink disabled:cursor-not-allowed disabled:opacity-40;
+  }
+
+  .input {
+    @apply h-9 w-full rounded-md border border-line-strong bg-surface px-3 text-sm text-ink placeholder:text-ink-3 disabled:bg-sunken disabled:text-ink-2;
+  }
+  textarea.input {
+    @apply h-auto py-2 leading-relaxed;
+  }
+  select.input {
+    @apply pr-8;
+  }
+
+  .field-label {
+    @apply mb-1.5 block text-[13px] font-medium text-ink;
+  }
+  .field-help {
+    @apply mt-1.5 text-xs leading-relaxed text-ink-2;
+  }
+  .field-error {
+    @apply mt-1.5 text-xs font-medium text-bad;
+  }
+
+  .data-table {
+    @apply w-full border-collapse text-sm;
+  }
+  .data-table th {
+    @apply border-b border-line bg-sunken px-4 py-2.5 text-left text-[12.5px] font-medium whitespace-nowrap text-ink-2;
+  }
+  .data-table td {
+    @apply border-b border-line px-4 py-3 align-middle;
+  }
+  .data-table tr:last-child td {
+    @apply border-b-0;
+  }
+
+  .mono {
+    @apply font-mono text-[13px];
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -1,0 +1,8 @@
+{
+  // Build tooling that runs in Node (Vite and Vitest config files).
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"]
+  },
+  "include": ["vite.config.ts", "vitest.config.ts"]
+}
