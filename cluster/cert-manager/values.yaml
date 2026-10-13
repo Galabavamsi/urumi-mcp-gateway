@@ -1,0 +1,25 @@
+# Values for the cert-manager Helm chart on the VPS (oci://quay.io/jetstack/charts/cert-manager; the chart
+# version is pinned in scripts/vps/install-addons.sh). Only what differs from the chart's defaults.
+
+crds:
+  enabled: true   # the chart installs and upgrades cert-manager's CRDs (Certificate, ClusterIssuer, ...)
+  keep: true      # and leaves them in place on `helm uninstall`: deleting a CRD deletes every object of it
+
+# The chart sets no requests or limits. Every long-running container in this cluster has both, so the
+# node's capacity sum stays honest (docs/VPS.md "Resource budget"). cert-manager is idle almost all the
+# time: it wakes up to issue or renew a certificate (every ~60 days per host).
+resources:                  # the controller (issues and renews certificates)
+  requests: { cpu: 10m, memory: 64Mi }
+  limits: { cpu: 200m, memory: 256Mi }
+webhook:                    # validates cert-manager objects on create/update
+  resources:
+    requests: { cpu: 10m, memory: 32Mi }
+    limits: { cpu: 100m, memory: 128Mi }
+cainjector:                 # injects CA bundles into webhook configurations
+  resources:
+    requests: { cpu: 10m, memory: 64Mi }
+    limits: { cpu: 100m, memory: 256Mi }
+startupapicheck:            # one-off Job at install/upgrade: waits until the webhook answers
+  resources:
+    requests: { cpu: 10m, memory: 32Mi }
+    limits: { cpu: 100m, memory: 64Mi }

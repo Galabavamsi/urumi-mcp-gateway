@@ -22,6 +22,18 @@
 // On Windows, kubectl and helm run inside WSL (wsl.exe -d Ubuntu --exec ...); elsewhere directly.
 // Exit code 0 means every check passed.
 //
+// The defaults are the local k3d cluster. To run against another deployment (e.g. the VPS, docs/VPS.md):
+//   E2E_STORE_URL     the storefront, e.g. https://store.urumi.humanslop.in  (default http://store.127-0-0-1.sslip.io;
+//                     the older name STORE_URL still works)
+//   E2E_KUBE_CONTEXT  kubectl/helm context, e.g. urumi-vps                   (default: the current context)
+//   E2E_KUBECONFIG    kubeconfig file, e.g. /home/<you>/.kube/urumi-vps.yaml (default: kubectl's own default)
+//                     (a WSL path when kubectl runs in WSL)
+//   E2E_WSL=0         run kubectl and helm directly even on Windows          (default: through WSL on Windows)
+//   WSL_DISTRO        the WSL distribution                                   (default Ubuntu)
+// Example (Windows, VPS, tunnel running in WSL):
+//   $env:E2E_STORE_URL='https://store.urumi.humanslop.in'; $env:E2E_KUBE_CONTEXT='urumi-vps'
+//   $env:E2E_KUBECONFIG='/home/<you>/.kube/urumi-vps.yaml'; node scripts/e2e-store.mjs
+//
 // Secrets: the MCP bearer tokens and the WooCommerce key pair are read with kubectl into memory only
 // and never printed.
 // Each run creates one "E2E Test Kettle" product (SKU E2E-KETTLE-<run id>) and one guest order (billing
@@ -33,8 +45,16 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 // woo-mcp's own OAuth 1.0a signer (Node 24 runs .ts files directly), to call WooCommerce as mcp-bot in (c6).
 import { signRequest } from '../apps/woo-mcp/src/woo/oauth1.ts';
 
-const STORE_URL = process.env.STORE_URL ?? 'http://store.127-0-0-1.sslip.io';
+const STORE_URL = (process.env.E2E_STORE_URL ?? process.env.STORE_URL ?? 'http://store.127-0-0-1.sslip.io').replace(/\/+$/, '');
 const WSL_DISTRO = process.env.WSL_DISTRO ?? 'Ubuntu';
+const USE_WSL = process.platform === 'win32' && process.env.E2E_WSL !== '0';
+// Flags that pin every kubectl / helm call to one cluster. Empty by default: the current context.
+const KUBECONFIG_PATH = process.env.E2E_KUBECONFIG ?? '';
+const KUBE_CONTEXT = process.env.E2E_KUBE_CONTEXT ?? '';
+const CLUSTER_FLAGS = {
+  kubectl: [...(KUBECONFIG_PATH ? ['--kubeconfig', KUBECONFIG_PATH] : []), ...(KUBE_CONTEXT ? ['--context', KUBE_CONTEXT] : [])],
+  helm: [...(KUBECONFIG_PATH ? ['--kubeconfig', KUBECONFIG_PATH] : []), ...(KUBE_CONTEXT ? ['--kube-context', KUBE_CONTEXT] : [])],
+};
 const QUICK = process.argv.includes('--quick');
 const RUN_ID = Date.now().toString(36); // makes this run's names unique (SKU, probe pods, email)
 // This run's test data, by the identifiers the cleanup finds it with.
@@ -85,9 +105,19 @@ function assert(condition, message) {
 // ---------------------------------------------------------------------------------------------------
 // kubectl / helm (inside WSL when running on Windows)
 // ---------------------------------------------------------------------------------------------------
+/**
+ * Adds the E2E_KUBECONFIG / E2E_KUBE_CONTEXT flags right after the kubectl or helm program name, wherever it sits
+ * in argv (e.g. `timeout 900 kubectl port-forward ...`), so no call site can forget them. No flags set = argv as is.
+ */
+function pinCluster(argv) {
+  const i = argv.findIndex((arg) => arg === 'kubectl' || arg === 'helm');
+  return i < 0 ? argv : [...argv.slice(0, i + 1), ...CLUSTER_FLAGS[argv[i]], ...argv.slice(i + 1)];
+}
+
 /** On Windows the cluster tools live in WSL. `--exec` runs the program without a shell, so arguments arrive as-is. */
 function command(argv) {
-  return process.platform === 'win32' ? ['wsl.exe', ['-d', WSL_DISTRO, '--exec', ...argv]] : [argv[0], argv.slice(1)];
+  const pinned = pinCluster(argv);
+  return USE_WSL ? ['wsl.exe', ['-d', WSL_DISTRO, '--exec', ...pinned]] : [pinned[0], pinned.slice(1)];
 }
 
 function run(argv, { input = '', timeoutMs = 120_000 } = {}) {
@@ -126,8 +156,8 @@ async function readSecret(namespace, name, key) {
   return Buffer.from(b64, 'base64').toString('utf8');
 }
 
-/** kubectl port-forward to a free local port; resolves when it is listening. */
-async function portForward(namespace, service) {
+/** kubectl port-forward to a free local port; resolves when `readyPath` answers 2xx through it. */
+async function portForward(namespace, service, readyPath = '/healthz') {
   // `timeout` ends the forward by itself even if this script dies without cleaning up.
   const [file, args] = command(['timeout', '900', 'kubectl', 'port-forward', '-n', namespace, `svc/${service}`, ':8080']);
   const child = spawn(file, args, { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -150,9 +180,9 @@ async function portForward(namespace, service) {
   const url = `http://127.0.0.1:${port}`;
   const close = () => child.kill();
   // On Windows, WSL relays a new Linux listening port to Windows' localhost after a short delay,
-  // so wait until /healthz answers from this side.
+  // so wait until the ready path answers from this side.
   for (let attempt = 1; ; attempt++) {
-    const ok = await fetch(`${url}/healthz`, { signal: AbortSignal.timeout(2000) }).then((r) => r.ok, () => false);
+    const ok = await fetch(`${url}${readyPath}`, { signal: AbortSignal.timeout(2000) }).then((r) => r.ok, () => false);
     if (ok) return { url, close };
     if (attempt === 20) {
       close();
@@ -341,7 +371,8 @@ const cleanups = [];
 const state = {}; // values later checks need from earlier ones
 
 async function main() {
-  console.log(`Urumi store e2e, run ${RUN_ID}, store ${STORE_URL}${QUICK ? ' (quick)' : ''}\n`);
+  const target = KUBE_CONTEXT ? `, kube context ${KUBE_CONTEXT}` : '';
+  console.log(`Urumi store e2e, run ${RUN_ID}, store ${STORE_URL}${target}${QUICK ? ' (quick)' : ''}\n`);
 
   await check('a', 'storefront lists the 4 seed products and is open (not "coming soon")', async () => {
     const home = await getText(`${STORE_URL}/`);
@@ -478,11 +509,22 @@ async function main() {
   await check('c6', "mcp-bot's REST key reads products but is refused customers, settings and system status", async () => {
     const consumerKey = await readSecret('store', 'woo-store-api', 'consumer-key');
     const consumerSecret = await readSecret('store', 'woo-store-api', 'consumer-secret');
+    // Where the signed requests go. Over plain http, through the Ingress like a shopper. An https store (the VPS)
+    // is different: behind Traefik WordPress sees https (is_ssl() is true) and WooCommerce then checks the
+    // signature with scheme https, while woo-mcp's signer always uses http, because woo-mcp itself only ever talks
+    // to WordPress over plain in-cluster HTTP. So for an https store take woo-mcp's own route: a port-forward to the
+    // wordpress Service (plain HTTP, is_ssl() false); the signature still carries the public home URL's host.
+    let restBase = STORE_URL;
+    if (STORE_URL.startsWith('https://')) {
+      const forward = await portForward('store', 'wordpress', '/wp-json/');
+      cleanups.push(forward.close);
+      restBase = forward.url;
+    }
     // Read-only GETs only: if the role were wrong, a DELETE test would itself destroy data.
     const signedGet = async (route) => {
       const path = `/wp-json/wc/v3${route}`;
       const { authorization } = signRequest({ method: 'GET', homeUrl: STORE_URL, path, query: [], consumerKey, consumerSecret });
-      const res = await fetch(`${STORE_URL}${path}`, { headers: { authorization }, redirect: 'manual' });
+      const res = await fetch(`${restBase}${path}`, { headers: { authorization }, redirect: 'manual' });
       const body = await res.json().catch(() => ({}));
       return { route, status: res.status, code: body.code ?? '' };
     };
@@ -495,7 +537,8 @@ async function main() {
       assert(r.status === 401 || r.status === 403, `GET ${route} -> ${r.status} ${r.code} (expected 401/403)`);
       refused.push(`${route} ${r.status} ${r.code}`);
     }
-    return [`GET /products 200 (signed as mcp-bot)`, `refused: ${refused.join(', ')}`];
+    const via = restBase === STORE_URL ? '' : ', via a port-forward to the wordpress Service';
+    return [`GET /products 200 (signed as mcp-bot${via})`, `refused: ${refused.join(', ')}`];
   });
 
   // --- supplier-mcp ----------------------------------------------------------------------------
