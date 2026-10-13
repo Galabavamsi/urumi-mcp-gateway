@@ -56,9 +56,23 @@ In production the registry prefix is `ghcr.io/galabavamsi/` and tags are git SHA
 | `WOO_CONSUMER_KEY` / `WOO_CONSUMER_SECRET` | (Secret `woo-store-api`) | OAuth 1.0a one-legged, HMAC-SHA256 |
 | `STORE_TZ` | `Asia/Kolkata` | Store timezone; "today" is computed in this zone |
 | `WOO_TIMEOUT_MS` | `8000` | Per request to WooCommerce |
+| `LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` (packages/mcp-common) |
 
 ## supplier-mcp environment
-`MCP_AUTH_TOKEN` (Secret `supplier-mcp-auth/token`), `CATALOG_PATH` (optional JSON file mounted from a ConfigMap; built-in catalog otherwise), `LOG_LEVEL`.
+| Var | Default | Meaning |
+|---|---|---|
+| `MCP_AUTH_TOKEN` | (Secret `supplier-mcp-auth/token`) | Required bearer on `/mcp`, at least 16 characters |
+| `CATALOG_PATH` | unset | Optional JSON catalog file (mounted from a ConfigMap); the built-in catalog otherwise |
+| `PORT` | `8080` | Listen port |
+| `LOG_LEVEL` | `info` | As above |
+| `DEMO_SLOW_TOOL` | `false` | `true` adds `slow_lookup {seconds}` (gateway timeout demo) |
+| `DEMO_POISONED_DESCRIPTION` | `false` | `true` appends a labelled prompt-injection text to `check_stock`'s description (threat-model demo) |
+
+## NetworkPolicy behaviour on k3s (kube-router)
+A blocked connection is **refused** (ECONNREFUSED in a few ms), not dropped, so callers never wait for a
+timeout. A Service with zero ready pods is refused the same way, so "blocked" and "down" look identical
+from the client side; the gateway's health checks must report which one it is.
+Verified by `scripts/e2e-store.mjs` checks (f) and (g).
 
 ## Store defaults (values)
 Country `IN:KA`, currency `INR`, timezone `Asia/Kolkata`, store name `Urumi Demo Store`, Storefront theme, Cash on Delivery enabled,

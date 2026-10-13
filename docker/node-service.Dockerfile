@@ -2,7 +2,8 @@
 #   docker build -f docker/node-service.Dockerfile --build-arg APP=woo-mcp -t urumi/woo-mcp:dev .
 # The build stage installs only the selected app + its workspace deps and bundles it with esbuild;
 # the runtime stage is just Node + one bundled file, running as the unprivileged `node` user (uid 1000).
-ARG NODE_IMAGE=node:24-alpine
+# Fully pinned (Node patch + Alpine release) so a rebuild of the same commit gets the same base.
+ARG NODE_IMAGE=node:24.21.0-alpine3.24
 
 FROM ${NODE_IMAGE} AS build
 ARG APP
