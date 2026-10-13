@@ -1,0 +1,131 @@
+{{- if .Values.backup.enabled }}
+{{- $b := .Values.backup -}}
+{{- $pg := .Values.postgres -}}
+# Nightly logical backup of the gateway database (users, API keys, servers and their encrypted
+# credentials, policies, audit log): pg_dump -Fc into the postgres-backups volume, keeping the newest
+# backup.keep dumps. Run one now with scripts/backup/backup-now.sh platform.
+#
+# - Image: the same postgres image as the server, so pg_dump always matches the server version.
+# - Login: the gateway's database user (secrets.postgres/password) over the Service, like the gateway.
+# - Network: only this pod -> Postgres:5432 (backup-networkpolicy.yaml). It does not get the gateway's
+#   network identity label, which would also open the in-cluster MCP servers to it.
+# Upstream credentials stay AES-256-GCM encrypted inside the dump; their key (gateway-internal) is a
+# Secret, not in the database, so a leaked dump does not leak the Firecrawl/AgentMail keys.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: postgres-backup
+  labels:
+    {{- include "platform.labels" (dict "root" . "component" "postgres-backup") | nindent 4 }}
+spec:
+  schedule: {{ required "backup.schedule is required" $b.schedule | quote }}
+  timeZone: {{ required "backup.timeZone is required" $b.timeZone | quote }}
+  # Never two dumps at once: a slow run makes the next one skip instead of piling up.
+  concurrencyPolicy: Forbid
+  # If the cluster was down at the scheduled time (e.g. a restart), a run up to an hour late still happens.
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    metadata:
+      labels:
+        {{- include "platform.podLabels" (dict "root" . "component" "postgres-backup") | nindent 8 }}
+    spec:
+      backoffLimit: 2                  # a failed dump (e.g. Postgres restarting) is retried twice
+      activeDeadlineSeconds: {{ $b.activeDeadlineSeconds }}
+      template:
+        metadata:
+          labels:
+            # The backup's network identity: backup-networkpolicy.yaml lets exactly these pods reach Postgres.
+            {{- include "platform.podLabels" (dict "root" . "component" "postgres-backup") | nindent 12 }}
+        spec:
+          restartPolicy: Never
+          enableServiceLinks: false
+          automountServiceAccountToken: false
+          securityContext:
+            # The postgres image's own user, like the server. Dumps are written as 999 with mode 0600.
+            {{- include "platform.podSecurityContext" (dict "uid" 999 "fsGroup" true) | nindent 12 }}
+          containers:
+            # A run-to-completion Job container: no probes (those are for long-running containers);
+            # success is exit code 0, and activeDeadlineSeconds bounds a hung run.
+            - name: backup
+              image: {{ include "platform.image" (dict "name" "postgres.image" "image" $pg.image) }}
+              imagePullPolicy: {{ $pg.image.pullPolicy }}
+              command: ["/bin/bash", "-c"]
+              args:
+                - |
+                  set -euo pipefail
+                  umask 077   # dumps hold user emails, password and key hashes: only uid 999 may read them
+                  name="$PGDATABASE-$(date -u +%Y%m%dT%H%M%SZ).dump"
+                  part="/backups/.$name.partial"   # hidden name: never mistaken for a dump until it is complete
+                  trap 'rm -f -- "$part"' EXIT
+                  # Left behind by a run that was killed (activeDeadlineSeconds); a live one is never this old.
+                  find /backups -maxdepth 1 -name '.*.partial' -mmin +120 -delete
+
+                  # kube-router (k3s's NetworkPolicy engine) takes a few seconds to add a brand-new pod to
+                  # its allow rules, and refuses its connections until then: wait for Postgres first.
+                  for _ in $(seq 30); do
+                    pg_isready --quiet --timeout=3 && break
+                    sleep 2
+                  done
+
+                  echo "backup: dumping database $PGDATABASE from $PGHOST"
+                  # Custom format (-Fc): compressed, and pg_restore can restore all of it or single tables.
+                  # pg_dump reads one snapshot, so the dump is consistent while the gateway keeps writing.
+                  # Connection settings and the password come from the PG* variables below.
+                  pg_dump --format=custom --file="$part"
+
+                  # Keep the file only if pg_restore can read it back (its table of contents).
+                  tables=$(pg_restore --list "$part" | grep -c ' TABLE DATA ' || true)
+                  (( tables > 0 )) || { echo "backup: the dump lists no tables" >&2; exit 1; }
+                  mv -- "$part" "/backups/$name"
+                  echo "backup: wrote $name ($(du -h "/backups/$name" | cut -f1), $tables tables)"
+
+                  # Retention. The names sort by time, so the glob lists the oldest first: delete all but
+                  # the newest BACKUP_KEEP. 0 keeps everything (the restore scripts' safety dump uses it).
+                  shopt -s nullglob
+                  dumps=(/backups/"$PGDATABASE"-*.dump)
+                  if (( BACKUP_KEEP > 0 )); then
+                    for (( i = 0; i < ${#dumps[@]} - BACKUP_KEEP; i++ )); do
+                      rm -f -- "${dumps[i]}"
+                      echo "backup: deleted ${dumps[i]##*/} (keeping the newest $BACKUP_KEEP)"
+                    done
+                  fi
+                  echo "backup: dumps on the volume:"
+                  ls -l /backups
+              env:
+                # libpq's own variables, so pg_dump, pg_restore and psql need no connection flags.
+                # Plain settings first; scripts/backup/*.sh read PGDATABASE back from here.
+                - name: PGHOST
+                  value: postgres
+                - name: PGPORT
+                  value: "5432"
+                - name: PGDATABASE
+                  value: {{ $pg.database | quote }}
+                - name: PGUSER
+                  value: {{ $pg.user | quote }}
+                - name: BACKUP_KEEP
+                  value: {{ $b.keep | toString | quote }}
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.secrets.postgres }}
+                      key: password
+              resources:
+                {{- toYaml $b.resources | nindent 16 }}
+              securityContext:
+                {{- include "platform.containerSecurityContext" . | nindent 16 }}
+              volumeMounts:
+                - name: backups
+                  mountPath: /backups
+                # Read-only root filesystem: bash and pg_dump may still want a temp dir.
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: backups
+              persistentVolumeClaim:
+                claimName: postgres-backups
+            - name: tmp
+              emptyDir:
+                sizeLimit: 64Mi
+{{- end }}

@@ -166,3 +166,21 @@ networkPolicy:
   #     - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
   #       podSelector: { matchLabels: { app.kubernetes.io/name: prometheus } }
   metricsFrom: []
+
+# --- Backups: a nightly pg_dump into a volume of its own (templates/backup-*.yaml) ----------------
+# Off by default; production turns it on. The dump runs on the postgres image above (pg_dump = server
+# version) and logs in as the gateway's database user from secrets.postgres.
+# Operations live in scripts/backup/: backup-now.sh (dump now), verify.sh (test-restore a dump into a
+# throwaway server), fetch.sh (copy one to your laptop), restore-gateway.sh (put one back).
+backup:
+  enabled: false
+  schedule: "15 2 * * *"          # every night at 02:15 (15 minutes after the store's dump)...
+  timeZone: Asia/Kolkata          # ...in this zone (CronJob timeZone: an IANA zone name)
+  keep: 7                         # newest dumps kept on the volume (0 = never delete any)
+  activeDeadlineSeconds: 900      # a run still busy after 15 minutes is killed; its partial file never counts
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { cpu: 500m, memory: 256Mi }
+  persistence:
+    size: 2Gi                     # compressed dumps; most of a dump is the audit log
+    storageClass: ""              # "" = the cluster's default StorageClass

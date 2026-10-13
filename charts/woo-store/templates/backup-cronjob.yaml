@@ -1,0 +1,130 @@
+{{- if .Values.backup.enabled }}
+{{- $b := .Values.backup -}}
+# Nightly logical backup of the store database: mariadb-dump | gzip into the mariadb-backups volume,
+# keeping the newest backup.keep dumps. Run one now with scripts/backup/backup-now.sh store.
+#
+# - Image: the same mariadb image as the server, so the dump client always matches the server version.
+# - Login: the app user (secrets.db/password). A dump only needs to read, and that user can read
+#   exactly one database. No root password in this pod.
+# - Network: only this pod -> MariaDB:3306 (backup-networkpolicy.yaml).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: mariadb-backup
+  labels:
+    {{- include "woo-store.labels" (dict "root" . "component" "mariadb-backup") | nindent 4 }}
+spec:
+  schedule: {{ required "backup.schedule is required" $b.schedule | quote }}
+  timeZone: {{ required "backup.timeZone is required" $b.timeZone | quote }}
+  # Never two dumps at once: a slow run makes the next one skip instead of piling up.
+  concurrencyPolicy: Forbid
+  # If the cluster was down at 02:00 (e.g. a restart), a run up to an hour late still happens.
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    metadata:
+      labels:
+        {{- include "woo-store.podLabels" (dict "root" . "component" "mariadb-backup") | nindent 8 }}
+    spec:
+      backoffLimit: 2                  # a failed dump (e.g. MariaDB restarting) is retried twice
+      activeDeadlineSeconds: {{ $b.activeDeadlineSeconds }}
+      template:
+        metadata:
+          labels:
+            # The backup's network identity: backup-networkpolicy.yaml lets exactly these pods reach MariaDB.
+            {{- include "woo-store.podLabels" (dict "root" . "component" "mariadb-backup") | nindent 12 }}
+        spec:
+          restartPolicy: Never
+          enableServiceLinks: false
+          automountServiceAccountToken: false
+          securityContext:
+            # The mariadb image's "mysql" user, like the server. Dumps are written as 999 with mode 0600.
+            {{- include "woo-store.podSecurityContext" (dict "uid" 999 "fsGroup" true) | nindent 12 }}
+          containers:
+            # A run-to-completion Job container: no probes (those are for long-running containers);
+            # success is exit code 0, and activeDeadlineSeconds bounds a hung run.
+            - name: backup
+              image: {{ include "woo-store.image" (dict "name" "mariadb.image" "image" .Values.mariadb.image) }}
+              imagePullPolicy: {{ .Values.mariadb.image.pullPolicy }}
+              command: ["/bin/bash", "-c"]
+              args:
+                - |
+                  set -euo pipefail
+                  umask 077   # dumps hold customer data and password hashes: only uid 999 may read them
+                  name="$DB_NAME-$(date -u +%Y%m%dT%H%M%SZ).sql.gz"
+                  part="/backups/.$name.partial"   # hidden name: never mistaken for a dump until it is complete
+                  trap 'rm -f -- "$part"' EXIT
+                  # Left behind by a run that was killed (activeDeadlineSeconds); a live one is never this old.
+                  find /backups -maxdepth 1 -name '.*.partial' -mmin +120 -delete
+
+                  # kube-router (k3s's NetworkPolicy engine) takes a few seconds to add a brand-new pod to
+                  # its allow rules, and refuses its connections until then: wait for MariaDB first.
+                  for _ in $(seq 30); do
+                    mariadb-admin --host="$DB_HOST" --user="$DB_USER" --connect-timeout=3 ping >/dev/null 2>&1 && break
+                    sleep 2
+                  done
+
+                  echo "backup: dumping database $DB_NAME from $DB_HOST"
+                  # --single-transaction: one consistent InnoDB snapshot without locking the store
+                  #   (every WordPress/WooCommerce table is InnoDB).
+                  # --routines: stored procedures and functions too (none today; stays complete if a plugin adds some).
+                  # utf8mb4: product names and order notes can hold emoji, which a narrower charset would mangle.
+                  # The password comes from MYSQL_PWD, so it never appears on a command line.
+                  mariadb-dump --host="$DB_HOST" --user="$DB_USER" --default-character-set=utf8mb4 \
+                    --single-transaction --routines "$DB_NAME" | gzip > "$part"
+
+                  # Keep the file only if it is whole: the gzip stream is intact and mariadb-dump wrote
+                  # its closing line.
+                  gzip -t "$part"
+                  gunzip -c "$part" | tail -n 1 | grep -q '^-- Dump completed' \
+                    || { echo "backup: the dump has no closing line: incomplete" >&2; exit 1; }
+                  tables=$(gunzip -c "$part" | grep -c '^CREATE TABLE' || true)
+                  mv -- "$part" "/backups/$name"
+                  echo "backup: wrote $name ($(du -h "/backups/$name" | cut -f1), $tables tables)"
+
+                  # Retention. The names sort by time, so the glob lists the oldest first: delete all but
+                  # the newest BACKUP_KEEP. 0 keeps everything (the restore scripts' safety dump uses it).
+                  shopt -s nullglob
+                  dumps=(/backups/"$DB_NAME"-*.sql.gz)
+                  if (( BACKUP_KEEP > 0 )); then
+                    for (( i = 0; i < ${#dumps[@]} - BACKUP_KEEP; i++ )); do
+                      rm -f -- "${dumps[i]}"
+                      echo "backup: deleted ${dumps[i]##*/} (keeping the newest $BACKUP_KEEP)"
+                    done
+                  fi
+                  echo "backup: dumps on the volume:"
+                  ls -l /backups
+              env:
+                # Plain settings first; scripts/backup/*.sh read DB_NAME back from here.
+                - name: DB_HOST
+                  value: mariadb
+                - name: DB_NAME
+                  value: {{ .Values.mariadb.database | quote }}
+                - name: DB_USER
+                  value: {{ .Values.mariadb.user | quote }}
+                - name: BACKUP_KEEP
+                  value: {{ $b.keep | toString | quote }}
+                - name: MYSQL_PWD
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.secrets.db }}
+                      key: password
+              resources:
+                {{- toYaml $b.resources | nindent 16 }}
+              securityContext:
+                {{- include "woo-store.containerSecurityContext" . | nindent 16 }}
+              volumeMounts:
+                - name: backups
+                  mountPath: /backups
+                # Read-only root filesystem: bash may still want a temp dir.
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: backups
+              persistentVolumeClaim:
+                claimName: mariadb-backups
+            - name: tmp
+              emptyDir:
+                sizeLimit: 64Mi
+{{- end }}

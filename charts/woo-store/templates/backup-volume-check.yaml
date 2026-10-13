@@ -1,0 +1,64 @@
+{{- /*
+The pod spec of the volume check below, as a named template so its hash can go into the Job's name.
+*/}}
+{{- define "woo-store.backupVolumeCheckPod" -}}
+metadata:
+  labels:
+    # Not the backup's network identity: this pod needs no network at all, so the release's
+    # default-deny policy leaves it none.
+    {{- include "woo-store.podLabels" (dict "root" . "component" "mariadb-backup-volume") | nindent 4 }}
+spec:
+  restartPolicy: Never
+  enableServiceLinks: false
+  automountServiceAccountToken: false
+  securityContext:
+    {{- include "woo-store.podSecurityContext" (dict "uid" 999 "fsGroup" true) | nindent 4 }}
+  containers:
+    - name: volume-check
+      image: {{ include "woo-store.image" (dict "name" "mariadb.image" "image" .Values.mariadb.image) }}
+      imagePullPolicy: {{ .Values.mariadb.image.pullPolicy }}
+      command: ["/bin/bash", "-c"]
+      args:
+        - |
+          set -euo pipefail
+          probe="/backups/.write-test-$HOSTNAME"
+          touch "$probe" && rm -f -- "$probe"
+          echo "backup volume: writable by uid $(id -u), $(df -h /backups | awk 'NR == 2 { print $4 }') free"
+          ls -l /backups
+      resources:
+        {{- toYaml .Values.backup.resources | nindent 8 }}
+      securityContext:
+        {{- include "woo-store.containerSecurityContext" . | nindent 8 }}
+      volumeMounts:
+        - name: backups
+          mountPath: /backups
+  volumes:
+    - name: backups
+      persistentVolumeClaim:
+        claimName: mariadb-backups
+{{- end }}
+
+{{- if .Values.backup.enabled }}
+{{- $pod := include "woo-store.backupVolumeCheckPod" . }}
+# A one-shot Job that mounts the backup volume as soon as backups are turned on. Two reasons:
+#
+# 1. Binding. local-path (k3s) binds a PVC only when a pod first mounts it (WaitForFirstConsumer), and
+#    Helm 4's --wait counts an unbound PVC as not ready. The CronJob's first pod only comes at 02:00, so
+#    without this Job `helm upgrade --wait --rollback-on-failure` would time out and roll itself back.
+# 2. An early warning. It proves the backup user can write to the volume now, at deploy time, instead
+#    of the first nightly run failing at 02:00.
+#
+# A Job's pod template cannot be changed after creation, so the name carries a hash of it: any change
+# (e.g. a new mariadb image) makes a new Job, and Helm deletes the old one.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mariadb-backup-volume-{{ $pod | sha256sum | trunc 8 }}
+  labels:
+    {{- include "woo-store.labels" (dict "root" . "component" "mariadb-backup-volume") | nindent 4 }}
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 300
+  template:
+    {{- $pod | nindent 4 }}
+{{- end }}
