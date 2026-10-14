@@ -731,8 +731,9 @@ async function main() {
       [now] = await pods('store', 'app.kubernetes.io/name=wordpress');
       assert(now && now.name !== old.name, 'the wordpress pod was not replaced');
       const bootstrapLog = await kubectl('logs', '-n', 'store', now.name, '-c', 'bootstrap');
-      seedLine = bootstrapLog.split('\n').find((l) => l.includes('seed products')) ?? '';
-      assert(seedLine.includes('none created'), `bootstrap re-seeded: "${seedLine}"`);
+      // The catalog step logs "created N (...)" only when it creates something.
+      seedLine = bootstrapLog.split('\n').find((l) => l.includes('catalog products')) ?? '';
+      assert(seedLine && !/\bcreated\b/.test(seedLine), `bootstrap re-seeded: "${seedLine}"`);
       const again = await callTool(woo.legacy, 'list_products', { sku: trashedSku });
       assert(again.count === 0, `the trashed seed ${trashedSku} came back: ${JSON.stringify(again.products)}`);
       await inWordpress('wp', 'eval', untrash);
