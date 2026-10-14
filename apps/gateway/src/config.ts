@@ -39,6 +39,8 @@ const EnvSchema = z.object({
   STORE_URL: z.url().optional(),
   COOKIE_SECURE: flag.default(false),
   STORE_TZ: z.string().min(1).default('Asia/Kolkata'),
+  /** The shop's name as the chat agent should call it; keep it equal to the woo-store chart's store.name. */
+  STORE_NAME: z.string().trim().min(1).max(100).default('Kaveri & Co.'),
 
   SEED_SERVERS_FILE: z.string().optional(),
   INTERNAL_HOST_ALLOWLIST: commaList.default([]),
@@ -64,6 +66,7 @@ export interface Config {
   storeUrl: string;
   cookieSecure: boolean;
   storeTz: string;
+  storeName: string;
   seedServersFile: string | null;
   internalHostAllowlist: string[];
   healthIntervalMs: number;
@@ -104,6 +107,7 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
     storeUrl: e.STORE_URL ?? defaultStoreUrl(e.PUBLIC_BASE_URL),
     cookieSecure: e.COOKIE_SECURE,
     storeTz: e.STORE_TZ,
+    storeName: e.STORE_NAME,
     seedServersFile: e.SEED_SERVERS_FILE ?? null,
     internalHostAllowlist: e.INTERNAL_HOST_ALLOWLIST,
     healthIntervalMs: e.HEALTH_INTERVAL_MS,

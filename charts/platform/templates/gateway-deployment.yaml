@@ -98,6 +98,8 @@ spec:
               value: {{ $gw.cookieSecure | toString | quote }}
             - name: STORE_TZ
               value: {{ $gw.storeTimezone | quote }}
+            - name: STORE_NAME
+              value: {{ $gw.storeName | quote }}
             - name: INTERNAL_HOST_ALLOWLIST
               value: {{ join "," $gw.internalHostAllowlist | quote }}
             - name: HEALTH_INTERVAL_MS

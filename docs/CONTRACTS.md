@@ -106,6 +106,7 @@ Images: `urumi/gateway:<tag>` (`docker/node-service.Dockerfile --build-arg APP=g
 | `PUBLIC_BASE_URL` | `http://app.127-0-0-1.sslip.io` | Shown in the UI (MCP URL, invite links) |
 | `COOKIE_SECURE` | `false` local / `true` prod | Session cookie `Secure` flag |
 | `STORE_TZ` | `Asia/Kolkata` | Chat system prompt ("today") |
+| `STORE_NAME` | `Kaveri & Co.` | The shop's name in the chat system prompt; keep it equal to the woo-store chart's `store.name` |
 | `SEED_SERVERS_FILE` | `/config/servers.json` (ConfigMap) | Upstreams pre-registered at startup (see below) |
 | `STORE_URL` | optional, e.g. `http://store.127-0-0-1.sslip.io` | Storefront link in `/api/config`; default = `PUBLIC_BASE_URL` with `app.` replaced by `store.` |
 | `SEED_WOO_TOKEN` | Secret `woo-mcp-auth/token` | Credential for seed `woo` |
@@ -172,6 +173,10 @@ from the client side; the gateway's health checks must report which one it is.
 Verified by `scripts/e2e-store.mjs` checks (f) and (g).
 
 ## Store defaults (values)
-Country `IN:KA`, currency `INR`, timezone `Asia/Kolkata`, store name `Urumi Demo Store`, Storefront theme, Cash on Delivery enabled,
+Country `IN:KA`, currency `INR`, timezone `Asia/Kolkata`, store name `Kaveri & Co.` (tagline "Everyday goods, made in India"),
+Storefront theme, Cash on Delivery enabled (plus direct bank transfer, set up once),
 shipping disabled (`woocommerce_ship_to_countries=disabled`), guest checkout on, HPOS enabled, coming-soon mode off.
 Local host `store.127-0-0-1.sslip.io`; production `store.urumi.humanslop.in`.
+Catalog: 20 products in 5 categories from `images/wordpress/seed/catalog.json`, including the four that tests and the
+supplier demo rely on: `URU-CHAI-250` ₹299, `URU-TOTE-01` ₹499, `URU-DIYA-02` ₹799, `URU-TURM-200` ₹199 (never on sale,
+stock not tracked). None of the supplier's "not sold in the store" items is in the catalog.

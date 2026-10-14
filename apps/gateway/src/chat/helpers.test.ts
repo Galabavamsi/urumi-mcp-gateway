@@ -15,8 +15,8 @@ describe('formatStoreTime / buildSystemPrompt', () => {
   });
 
   it('names the store, the currency, the server prefixes and the untrusted-data rule', () => {
-    const prompt = buildSystemPrompt(new Date('2026-10-13T10:00:00Z'), 'Asia/Kolkata');
-    expect(prompt).toContain('Urumi Demo Store');
+    const prompt = buildSystemPrompt(new Date('2026-10-13T10:00:00Z'), 'Asia/Kolkata', 'Kaveri & Co.');
+    expect(prompt).toContain('runs "Kaveri & Co.", a WooCommerce shop');
     expect(prompt).toContain('INR');
     for (const prefix of ['woo__', 'supplier__', 'firecrawl__', 'mail__']) expect(prompt).toContain(prefix);
     expect(prompt).toContain('urumi@agentmail.to');

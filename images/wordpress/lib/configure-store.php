@@ -296,40 +296,366 @@ function urumi_ensure_api_key( int $user_id ): void {
 	urumi_log( 'api key', "rotated key #{$key_id} to ...{$desired['truncated_key']}" );
 }
 
-/**
- * Seed catalog (same names/SKUs/prices as the supplier catalog). Each seed SKU is applied ONCE in the
- * store's life and remembered in the option urumi_seeded_skus. After that the product belongs to the
- * merchant: if they trash it or change its SKU, a restart must not bring it back. A seed SKU added to
- * the values later is still created once.
- */
-function urumi_seed_products(): void {
-	$products = json_decode( urumi_env( 'STORE_SEED_PRODUCTS', '[]' ), true );
-	if ( ! is_array( $products ) ) {
-		WP_CLI::error( 'STORE_SEED_PRODUCTS is not a JSON array' );
+// --- The shop's own content: catalog, photos, pages, menu --------------------------------------------
+// Seeded from images/wordpress/seed (baked into the image, read-only): catalog.json, the photos in
+// images/ (credits in CREDITS.md) and the page templates. Every item is applied ONCE in the store's
+// life and remembered in an option (autoload off: only the bootstrap reads them, and each is saved
+// right after its item, so a crash part-way never duplicates anything). After that the item belongs to
+// the merchant: one they edit is never overwritten, one they delete is never brought back. A new item
+// in a later image's catalog is still applied once. Orders are never read or written here.
+
+const URUMI_SEED_DIR = '/usr/local/share/urumi/seed';
+
+function urumi_catalog(): array {
+	$file    = URUMI_SEED_DIR . '/catalog.json';
+	$catalog = is_readable( $file ) ? json_decode( (string) file_get_contents( $file ), true ) : null;
+	if ( ! is_array( $catalog ) || empty( $catalog['products'] ) || empty( $catalog['categories'] ) || empty( $catalog['hero']['image'] ) ) {
+		WP_CLI::error( "{$file} is missing or is not a valid catalog" );
 	}
-	$seeded  = (array) get_option( 'urumi_seeded_skus', array() );
+	return $catalog;
+}
+
+/** Adds one value to a list option (autoload off), saving at once. */
+function urumi_remember( string $option, string $value ): void {
+	$list = (array) get_option( $option, array() );
+	if ( ! in_array( $value, $list, true ) ) {
+		$list[] = $value;
+		update_option( $option, $list, false );
+	}
+}
+
+/**
+ * Imports one seed photo into the media library, once (option urumi_seed_media: file => attachment ID).
+ * Returns the attachment ID, or 0 if the photo was imported before and has since been deleted.
+ * $meta maps file => title and alt text; $imported collects what this run imported, for the log.
+ */
+function urumi_seed_photo( string $file, array $meta, array &$imported ): int {
+	$media = (array) get_option( 'urumi_seed_media', array() );
+	if ( isset( $media[ $file ] ) ) {
+		return 'attachment' === get_post_type( (int) $media[ $file ] ) ? (int) $media[ $file ] : 0;
+	}
+	require_once ABSPATH . 'wp-admin/includes/file.php';
+	require_once ABSPATH . 'wp-admin/includes/media.php';
+	require_once ABSPATH . 'wp-admin/includes/image.php';
+	// media_handle_sideload() moves its input into uploads (and makes the thumbnails), so hand it a copy:
+	// the seed directory is part of the read-only image.
+	$tmp = wp_tempnam( $file );
+	if ( ! copy( URUMI_SEED_DIR . '/images/' . $file, $tmp ) ) {
+		WP_CLI::error( "could not read seed photo {$file}" );
+	}
+	$id = media_handle_sideload( array( 'name' => $file, 'tmp_name' => $tmp ), 0, null, array( 'post_title' => $meta[ $file ]['title'] ?? $file ) );
+	if ( is_wp_error( $id ) ) {
+		wp_delete_file( $tmp );
+		WP_CLI::error( "could not import seed photo {$file}: " . $id->get_error_message() );
+	}
+	update_post_meta( $id, '_wp_attachment_image_alt', $meta[ $file ]['alt'] ?? '' );
+	$media[ $file ] = $id;
+	update_option( 'urumi_seed_media', $media, false );
+	$imported[] = $file;
+	return $id;
+}
+
+/**
+ * Product categories, each created once (option urumi_seeded_categories), with its photo and its place
+ * in the catalog order (the homepage's "Shop by Category"). A category the merchant already made with
+ * the same slug is used as it is. Returns slug => term ID for the categories that exist.
+ */
+function urumi_seed_categories( array $categories, array $meta, array &$imported ): array {
+	$seeded  = (array) get_option( 'urumi_seeded_categories', array() );
+	$ids     = array();
 	$created = array();
-	foreach ( $products as $seed ) {
-		if ( in_array( $seed['sku'], $seeded, true ) ) {
+	foreach ( $categories as $position => $category ) {
+		$term = get_term_by( 'slug', $category['slug'], 'product_cat' );
+		if ( $term ) {
+			$ids[ $category['slug'] ] = (int) $term->term_id;
+		} elseif ( ! in_array( $category['slug'], $seeded, true ) ) {
+			$result = wp_insert_term( $category['name'], 'product_cat', array( 'slug' => $category['slug'], 'description' => $category['description'] ) );
+			if ( is_wp_error( $result ) ) {
+				WP_CLI::error( "could not create category {$category['slug']}: " . $result->get_error_message() );
+			}
+			$term_id = (int) $result['term_id'];
+			update_term_meta( $term_id, 'order', $position + 1 ); // WooCommerce's own sort key for categories
+			$photo = urumi_seed_photo( $category['image'], $meta, $imported );
+			if ( $photo ) {
+				update_term_meta( $term_id, 'thumbnail_id', $photo );
+			}
+			$ids[ $category['slug'] ] = $term_id;
+			$created[]                = $category['slug'];
+		}
+		urumi_remember( 'urumi_seeded_categories', $category['slug'] );
+	}
+	urumi_log( 'catalog categories', ( $created ? 'created ' . implode( ', ', $created ) : 'none created' ) . '; ' . count( $ids ) . ' of ' . count( $categories ) . ' present' );
+	return $ids;
+}
+
+/** True if the product is still exactly what an earlier bootstrap seeded (one of the original four). */
+function urumi_is_untouched_seed( WC_Product $product, array $entry ): bool {
+	return isset( $entry['original']['short_description'] )
+		&& $product->get_name() === $entry['name']
+		&& $product->get_regular_price() === (string) $entry['regular_price']
+		&& $product->get_short_description() === $entry['original']['short_description']
+		&& '' === $product->get_description()
+		&& 0 === (int) $product->get_image_id();
+}
+
+/** Writes one catalog entry into a product (new, or one of the untouched original four) and saves it. */
+function urumi_apply_catalog_entry( WC_Product_Simple $product, array $entry, array $category_ids, array $meta, array &$imported ): void {
+	$product->set_name( $entry['name'] );
+	$product->set_sku( $entry['sku'] );
+	$product->set_regular_price( (string) $entry['regular_price'] ); // WooCommerce stores prices as strings.
+	$product->set_sale_price( isset( $entry['sale_price'] ) ? (string) $entry['sale_price'] : '' );
+	$product->set_short_description( $entry['short_description'] );
+	$product->set_description( $entry['description'] );
+	if ( isset( $category_ids[ $entry['category'] ] ) ) {
+		$product->set_category_ids( array( $category_ids[ $entry['category'] ] ) );
+	}
+	$product->set_weight( (string) ( $entry['weight'] ?? '' ) );
+	$product->set_featured( ! empty( $entry['featured'] ) );
+	if ( isset( $entry['stock'] ) ) {
+		// Saving with stock management on and 0 left marks the product out of stock.
+		$product->set_manage_stock( true );
+		$product->set_stock_quantity( (int) $entry['stock'] );
+	}
+	if ( ! empty( $entry['listed'] ) ) {
+		$product->set_date_created( $entry['listed'] . 'T10:00:00+05:30' ); // "New In" sorts by this date
+	}
+	$photo = urumi_seed_photo( $entry['image'], $meta, $imported );
+	if ( $photo ) {
+		$product->set_image_id( $photo );
+	}
+	$product->set_status( 'publish' );
+	$product->save();
+	if ( $photo && 0 === (int) get_post_field( 'post_parent', $photo ) ) {
+		wp_update_post( array( 'ID' => $photo, 'post_parent' => $product->get_id() ) ); // "Uploaded to" in the media library
+	}
+}
+
+/**
+ * The catalog's products. Each SKU is applied once (option urumi_catalog_skus):
+ *  - no product has the SKU: created, unless it was seeded before and the merchant has since trashed the
+ *    product or changed its SKU (option urumi_seeded_skus, kept from the earlier four-product seeding);
+ *  - one of the four products earlier versions seeded, still exactly as seeded: completed with its
+ *    photo, category, descriptions, weight and listing date (its name, SKU and price do not change);
+ *  - any other product with the SKU belongs to the merchant and is left alone.
+ */
+function urumi_seed_catalog_products( array $products, array $category_ids, array $meta, array &$imported ): void {
+	$applied   = (array) get_option( 'urumi_catalog_skus', array() );
+	$seeded    = (array) get_option( 'urumi_seeded_skus', array() );
+	$created   = array();
+	$completed = array();
+	$left      = array();
+	foreach ( $products as $entry ) {
+		$sku = $entry['sku'];
+		if ( in_array( $sku, $applied, true ) ) {
 			continue;
 		}
-		// The SKU check also covers stores seeded before the option existed, and a crash mid-loop.
-		if ( ! wc_get_product_id_by_sku( $seed['sku'] ) ) {
-			$product = new WC_Product_Simple();
-			$product->set_name( $seed['name'] );
-			$product->set_sku( $seed['sku'] );
-			$product->set_regular_price( (string) $seed['price'] ); // WooCommerce stores prices as strings.
-			$product->set_short_description( $seed['description'] ?? '' );
-			$product->set_status( 'publish' );
-			$product->save();
-			$created[] = $seed['sku'];
+		$id = wc_get_product_id_by_sku( $sku );
+		if ( $id ) {
+			$product = wc_get_product( $id );
+			if ( $product instanceof WC_Product_Simple && urumi_is_untouched_seed( $product, $entry ) ) {
+				urumi_apply_catalog_entry( $product, $entry, $category_ids, $meta, $imported );
+				$completed[] = $sku;
+			} else {
+				$left[] = $sku;
+			}
+		} elseif ( in_array( $sku, $seeded, true ) ) {
+			$left[] = "{$sku} (removed by the merchant)";
+		} else {
+			urumi_apply_catalog_entry( new WC_Product_Simple(), $entry, $category_ids, $meta, $imported );
+			$created[] = $sku;
 		}
-		$seeded[] = $seed['sku'];
-		// Saved after each product (autoload off: only the bootstrap reads it), so a crash never duplicates.
-		update_option( 'urumi_seeded_skus', $seeded, false );
+		urumi_remember( 'urumi_seeded_skus', $sku );
+		urumi_remember( 'urumi_catalog_skus', $sku );
 	}
-	$present = count( $products ) - count( $created );
-	urumi_log( 'seed products', ( $created ? 'created ' . implode( ', ', $created ) : 'none created' ) . "; {$present} already seeded" );
+	$parts = array();
+	foreach ( array( 'created' => $created, 'completed' => $completed, 'left as they are' => $left ) as $verb => $skus ) {
+		if ( $skus ) {
+			$parts[] = "{$verb} " . count( $skus ) . ' (' . implode( ', ', $skus ) . ')';
+		}
+	}
+	urumi_log( 'catalog products', $parts ? implode( '; ', $parts ) : 'unchanged (all ' . count( $products ) . ' applied before)' );
+}
+
+/**
+ * The Home and About pages, each created once (option urumi_seed_pages: key => page ID, 0 when a page
+ * with that address already existed and was left alone). Home becomes the front page when it is
+ * created; after that the reading settings are the merchant's. Returns key => page ID.
+ */
+function urumi_seed_pages( array $pages, array $vars ): array {
+	$done    = (array) get_option( 'urumi_seed_pages', array() );
+	$created = array();
+	foreach ( $pages as $page ) {
+		$key = $page['key'];
+		if ( array_key_exists( $key, $done ) ) {
+			continue;
+		}
+		if ( get_page_by_path( $page['slug'] ) ) {
+			$done[ $key ] = 0;
+		} else {
+			$id = wp_insert_post(
+				array(
+					'post_type'      => 'page',
+					'post_status'    => 'publish',
+					'post_title'     => $page['title'],
+					'post_name'      => $page['slug'],
+					'post_content'   => strtr( (string) file_get_contents( URUMI_SEED_DIR . '/' . $page['file'] ), $vars ),
+					'comment_status' => 'closed',
+					'ping_status'    => 'closed',
+				),
+				true
+			);
+			if ( is_wp_error( $id ) ) {
+				WP_CLI::error( "could not create page {$key}: " . $id->get_error_message() );
+			}
+			if ( ! empty( $page['template'] ) ) {
+				update_post_meta( $id, '_wp_page_template', $page['template'] );
+			}
+			if ( 'home' === $key ) {
+				update_option( 'show_on_front', 'page' );
+				update_option( 'page_on_front', $id );
+			}
+			$done[ $key ] = $id;
+			$created[]    = "{$key} #{$id}" . ( 'home' === $key ? ' (front page)' : '' );
+		}
+		update_option( 'urumi_seed_pages', $done, false );
+	}
+	urumi_log( 'pages', $created ? 'created ' . implode( ', ', $created ) : 'unchanged (' . count( $done ) . ' seeded before)' );
+	return $done;
+}
+
+/**
+ * The main menu, created once (option urumi_seed_menu): Shop with the categories under it, then About
+ * us. It goes into Storefront's primary and handheld (mobile) locations, unless those are already set.
+ */
+function urumi_seed_menu( array $categories, array $category_ids, array $page_ids ): void {
+	if ( false !== get_option( 'urumi_seed_menu' ) ) {
+		urumi_log( 'menu', 'unchanged (created before)' );
+		return;
+	}
+	if ( wp_get_nav_menu_object( 'Main menu' ) ) {
+		update_option( 'urumi_seed_menu', 0, false );
+		urumi_log( 'menu', 'a menu called "Main menu" already exists: left as it is' );
+		return;
+	}
+	$menu_id = wp_create_nav_menu( 'Main menu' );
+	if ( is_wp_error( $menu_id ) ) {
+		WP_CLI::error( 'could not create the menu: ' . $menu_id->get_error_message() );
+	}
+	$add  = static fn( array $item ) => wp_update_nav_menu_item( $menu_id, 0, $item + array( 'menu-item-status' => 'publish' ) );
+	$shop = $add( array( 'menu-item-title' => 'Shop', 'menu-item-type' => 'post_type', 'menu-item-object' => 'page', 'menu-item-object-id' => wc_get_page_id( 'shop' ) ) );
+	foreach ( $categories as $category ) {
+		if ( isset( $category_ids[ $category['slug'] ] ) ) {
+			$add( array( 'menu-item-title' => $category['name'], 'menu-item-type' => 'taxonomy', 'menu-item-object' => 'product_cat', 'menu-item-object-id' => $category_ids[ $category['slug'] ], 'menu-item-parent-id' => $shop ) );
+		}
+	}
+	if ( ! empty( $page_ids['about'] ) ) {
+		$add( array( 'menu-item-title' => 'About us', 'menu-item-type' => 'post_type', 'menu-item-object' => 'page', 'menu-item-object-id' => $page_ids['about'] ) );
+	}
+	$locations = (array) get_theme_mod( 'nav_menu_locations', array() );
+	$placed    = array();
+	foreach ( array( 'primary', 'handheld' ) as $location ) {
+		if ( empty( $locations[ $location ] ) ) {
+			$locations[ $location ] = $menu_id;
+			$placed[]               = $location;
+		}
+	}
+	set_theme_mod( 'nav_menu_locations', $locations );
+	update_option( 'urumi_seed_menu', $menu_id, false );
+	urumi_log( 'menu', "created #{$menu_id}" . ( $placed ? ' in ' . implode( ' and ', $placed ) : ' (locations already set: not placed)' ) );
+}
+
+/**
+ * WordPress's sample content ("Hello world!" with its sample comment, and "Sample Page") is deleted once,
+ * and only if it was never edited (modified date still equal to the creation date).
+ */
+function urumi_remove_sample_content(): void {
+	if ( get_option( 'urumi_sample_content_checked' ) ) {
+		urumi_log( 'sample content', 'unchanged (checked before)' );
+		return;
+	}
+	$removed = array();
+	foreach ( array( 'post' => 'hello-world', 'page' => 'sample-page' ) as $type => $slug ) {
+		$found = get_posts( array( 'post_type' => $type, 'name' => $slug, 'post_status' => 'any', 'numberposts' => 1 ) );
+		$post  = $found[0] ?? null;
+		if ( $post && $post->post_modified_gmt === $post->post_date_gmt ) {
+			wp_delete_post( $post->ID, true ); // also deletes the post's comments
+			$removed[] = "{$type} \"{$post->post_title}\"";
+		}
+	}
+	update_option( 'urumi_sample_content_checked', 1, false );
+	urumi_log( 'sample content', $removed ? 'removed ' . implode( ', ', $removed ) : 'none left as installed' );
+}
+
+/**
+ * Bank transfer next to Cash on Delivery, and the shop grid layout: set once (option urumi_shop_setup),
+ * after which the merchant may change them. COD stays the first payment method. No account numbers are
+ * published: the instructions say the shop emails them.
+ */
+function urumi_setup_shop_once(): void {
+	if ( get_option( 'urumi_shop_setup' ) ) {
+		urumi_log( 'bank transfer, shop grid', 'unchanged (set up before)' );
+		return;
+	}
+	$bacs = WC()->payment_gateways()->payment_gateways()['bacs'] ?? null;
+	if ( ! $bacs ) {
+		WP_CLI::error( 'Direct bank transfer gateway not registered' );
+	}
+	$settings = array(
+		'enabled'      => 'yes',
+		'title'        => 'Direct bank transfer',
+		'description'  => 'Pay by NEFT, IMPS or UPI. We email you our account details after you place the order and pack it as soon as the payment arrives.',
+		'instructions' => 'Thank you for your order. We are emailing you our account details; please use your order number as the payment reference. We pack your order as soon as the payment arrives.',
+	);
+	foreach ( $settings as $key => $value ) {
+		$bacs->update_option( $key, $value );
+	}
+	update_option( 'woocommerce_gateway_order', array( 'cod' => 0, 'bacs' => 1 ) );
+	// Product grid: 4 per row, 4 rows per page (Storefront's default is 3 by 4).
+	update_option( 'woocommerce_catalog_columns', 4 );
+	update_option( 'woocommerce_catalog_rows', 4 );
+	update_option( 'urumi_shop_setup', 1, false );
+	urumi_log( 'bank transfer, shop grid', 'bank transfer enabled after Cash on Delivery; shop grid 4 x 4' );
+}
+
+function urumi_seed_storefront(): void {
+	$catalog = urumi_catalog();
+	// Seeded posts, pages and photos belong to the store admin. Also lifts the HTML filter for the page
+	// templates (wp_set_current_user re-runs kses_init for the new user).
+	$admin = get_user_by( 'login', urumi_env( 'WP_ADMIN_USER', 'admin' ) );
+	if ( $admin ) {
+		wp_set_current_user( $admin->ID );
+	}
+	$meta = array( $catalog['hero']['image'] => array( 'title' => 'Homepage banner', 'alt' => $catalog['hero']['image_alt'] ?? '' ) );
+	foreach ( $catalog['products'] as $entry ) {
+		$meta[ $entry['image'] ] = array( 'title' => $entry['name'], 'alt' => $entry['image_alt'] ?? '' );
+	}
+	$imported     = array();
+	$category_ids = urumi_seed_categories( $catalog['categories'], $meta, $imported );
+	urumi_seed_catalog_products( $catalog['products'], $category_ids, $meta, $imported );
+
+	$hero_url = '';
+	$hero     = urumi_seed_photo( $catalog['hero']['image'], $meta, $imported );
+	if ( $hero ) {
+		$hero_url = wp_make_link_relative( (string) wp_get_attachment_image_url( $hero, 'full' ) );
+	}
+	urumi_log( 'catalog photos', ( $imported ? 'imported ' . count( $imported ) : 'none imported' ) . '; ' . count( (array) get_option( 'urumi_seed_media', array() ) ) . ' seeded so far' );
+
+	// Root-relative links, so a database restored under another host name still works.
+	$page_ids = urumi_seed_pages(
+		$catalog['pages'],
+		array(
+			'{{hero_url}}'   => esc_url( $hero_url ),
+			'{{shop_url}}'   => esc_url( wp_make_link_relative( wc_get_page_permalink( 'shop' ) ) ),
+			'{{store_name}}' => esc_html( urumi_env( 'STORE_NAME' ) ),
+			'{{tagline}}'    => esc_html( urumi_env( 'STORE_TAGLINE', '' ) ),
+			'{{address}}'    => esc_html( urumi_env( 'STORE_ADDRESS' ) ),
+			'{{city}}'       => esc_html( urumi_env( 'STORE_CITY' ) ),
+			'{{postcode}}'   => esc_html( urumi_env( 'STORE_POSTCODE' ) ),
+		)
+	);
+	urumi_seed_menu( $catalog['categories'], $category_ids, $page_ids );
+	urumi_remove_sample_content();
+	urumi_setup_shop_once();
 }
 
 /** Fail the bootstrap (and so the pod) if the end state is not what the store needs. */
@@ -363,8 +689,10 @@ urumi_ensure_site_url( $home );
 urumi_ensure_options(
 	'general',
 	array(
-		'blogname'        => urumi_env( 'STORE_NAME' ),
-		'timezone_string' => urumi_env( 'STORE_TIMEZONE' ),
+		'blogname'                    => urumi_env( 'STORE_NAME' ),
+		'blogdescription'             => urumi_env( 'STORE_TAGLINE', '' ),
+		'timezone_string'             => urumi_env( 'STORE_TIMEZONE' ),
+		'woocommerce_email_from_name' => urumi_env( 'STORE_NAME' ),
 	)
 );
 urumi_ensure_permalinks();
@@ -402,5 +730,5 @@ urumi_ensure_pages();
 urumi_ensure_admin_password();
 urumi_ensure_bot_role();
 urumi_ensure_api_key( urumi_ensure_bot_user() );
-urumi_seed_products();
+urumi_seed_storefront();
 urumi_verify();

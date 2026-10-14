@@ -61,7 +61,7 @@ const RUN_ID = Date.now().toString(36); // makes this run's names unique (SKU, p
 const KETTLE_SKU = `E2E-KETTLE-${RUN_ID.toUpperCase()}`;
 const ORDER_EMAIL = `e2e+${RUN_ID}@example.test`;
 
-// Must match charts/woo-store/values.yaml (store.seedProducts) and the supplier catalog.
+// Must match images/wordpress/seed/catalog.json (the four original seed products) and the supplier catalog.
 const SEED_PRODUCTS = [
   { name: 'Masala Chai Tin (250g)', sku: 'URU-CHAI-250', price: '299.00' },
   { name: 'Handloom Cotton Tote', sku: 'URU-TOTE-01', price: '499.00' },

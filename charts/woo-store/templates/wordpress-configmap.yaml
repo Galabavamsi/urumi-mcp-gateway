@@ -37,10 +37,10 @@ data:
   WP_ADMIN_EMAIL: {{ .Values.store.adminEmail | quote }}
   DB_WAIT_TIMEOUT_SECONDS: {{ .Values.wordpress.bootstrap.dbWaitTimeoutSeconds | quote }}
   STORE_NAME: {{ .Values.store.name | quote }}
+  STORE_TAGLINE: {{ .Values.store.tagline | quote }}
   STORE_COUNTRY: {{ .Values.store.country | quote }}
   STORE_ADDRESS: {{ .Values.store.address | quote }}
   STORE_CITY: {{ .Values.store.city | quote }}
   STORE_POSTCODE: {{ .Values.store.postcode | quote }}
   STORE_CURRENCY: {{ .Values.store.currency | quote }}
   STORE_TIMEZONE: {{ .Values.store.timezone | quote }}
-  STORE_SEED_PRODUCTS: {{ .Values.store.seedProducts | toJson | quote }}

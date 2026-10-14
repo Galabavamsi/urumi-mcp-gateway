@@ -95,6 +95,7 @@ export function createGateway(config: Config, options: GatewayOptions) {
     anthropicApiKey: config.anthropicApiKey,
     model: config.llmModel,
     storeTz: config.storeTz,
+    storeName: config.storeName,
   };
 
   let draining = false;

@@ -11,8 +11,8 @@ export function formatStoreTime(now: Date, storeTz: string): string {
   return `${human} (${isoDate})`;
 }
 
-export function buildSystemPrompt(now: Date, storeTz: string): string {
-  return `You are the AI assistant of the team that runs the "Urumi Demo Store", a WooCommerce shop.
+export function buildSystemPrompt(now: Date, storeTz: string, storeName: string): string {
+  return `You are the AI assistant of the team that runs "${storeName}", a WooCommerce shop.
 The current date and time in the store's timezone (${storeTz}) is ${formatStoreTime(now, storeTz)}. "Today" means this date in that timezone.
 All store prices are in Indian rupees (INR, ₹).
 

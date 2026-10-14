@@ -24,6 +24,7 @@ describe('loadConfig', () => {
       llmModel: 'claude-haiku-5-5',
       cookieSecure: false,
       storeTz: 'Asia/Kolkata',
+      storeName: 'Kaveri & Co.',
       healthIntervalMs: 5000,
       defaultCallTimeoutMs: 10_000,
       publicBaseUrl: 'http://app.127-0-0-1.sslip.io',
@@ -43,11 +44,13 @@ describe('loadConfig', () => {
       BOOTSTRAP_ADMIN_EMAIL: 'Admin@Example.com',
       BOOTSTRAP_ADMIN_PASSWORD: 'long-enough-password',
       STORE_URL: '',
+      STORE_NAME: '  Lakeview Goods ',
     });
     expect(config.cookieSecure).toBe(true);
     expect(config.internalHostAllowlist).toEqual(['woo-mcp.store.svc.cluster.local', 'supplier-mcp.mcp-upstreams.svc.cluster.local']);
     expect(config.bootstrapAdmin).toEqual({ email: 'admin@example.com', password: 'long-enough-password' });
     expect(config.storeUrl).toBe('http://store.127-0-0-1.sslip.io');
+    expect(config.storeName).toBe('Lakeview Goods');
   });
 
   it('names bad variables without echoing their values', () => {

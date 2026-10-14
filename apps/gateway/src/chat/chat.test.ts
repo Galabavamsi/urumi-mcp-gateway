@@ -42,6 +42,7 @@ function appWith(script: Script, overrides: Partial<ChatDeps> = {}) {
       anthropicApiKey: 'not-used-by-the-fake',
       model: 'claude-haiku-5-5',
       storeTz: 'Asia/Kolkata',
+      storeName: 'Kaveri & Co.',
       messagesApi: llm,
       now: () => new Date('2026-10-13T10:00:00Z'),
       ...overrides,
@@ -94,7 +95,7 @@ describe('POST /api/chat', () => {
     // What the model was sent.
     const [first, second] = llm.requests;
     expect(first?.model).toBe('claude-haiku-5-5');
-    expect(first?.system).toContain('Urumi Demo Store');
+    expect(first?.system).toContain('"Kaveri & Co."');
     expect(first?.system).toContain('(2026-10-13)');
     expect(first).not.toHaveProperty('temperature');
     expect(first).not.toHaveProperty('tool_choice');

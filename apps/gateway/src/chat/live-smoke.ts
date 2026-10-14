@@ -28,7 +28,7 @@ try {
     c.set('user', { id: 'smoke-user', email: 'smoke@example.test', name: 'Smoke Test', role: 'admin' });
     await next();
   });
-  app.route('/api/chat', createChatRoutes({ internalMcpUrl: gateway.url, signChatToken: async () => token, anthropicApiKey: apiKey, model, storeTz: 'Asia/Kolkata' }));
+  app.route('/api/chat', createChatRoutes({ internalMcpUrl: gateway.url, signChatToken: async () => token, anthropicApiKey: apiKey, model, storeTz: 'Asia/Kolkata', storeName: 'Kaveri & Co.' }));
 
   console.log(`model: ${model}\nquestion: ${question}\n`);
   const started = performance.now();

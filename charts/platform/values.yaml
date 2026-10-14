@@ -43,6 +43,7 @@ gateway:
   cookieSecure: false
   llmModel: claude-haiku-5-5      # LLM_MODEL for the chat agent (claude-sonnet-5-5 is the bigger option)
   storeTimezone: Asia/Kolkata     # STORE_TZ: "today" in the chat system prompt
+  storeName: "Kaveri & Co."       # STORE_NAME: the shop the chat agent works for (= woo-store's store.name)
   logLevel: info                  # LOG_LEVEL: debug | info | warn | error
   healthIntervalMs: 5000          # HEALTH_INTERVAL_MS: upstream health loop
   defaultCallTimeoutMs: 10000     # DEFAULT_CALL_TIMEOUT_MS: per tool call, unless a server overrides it

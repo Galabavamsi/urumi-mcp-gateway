@@ -103,13 +103,24 @@ COPY php/zz-urumi.ini /usr/local/etc/php/conf.d/zz-urumi.ini
 # Store bootstrap (run as an initContainer with this same image).
 COPY bin/urumi-bootstrap.sh /usr/local/bin/urumi-bootstrap.sh
 COPY lib/ /usr/local/lib/urumi/
+# The shop's own content: catalog.json, the product photos and the page templates (photo credits in
+# seed/CREDITS.md). The bootstrap imports each item once per store; after that it is the merchant's.
+COPY seed/ /usr/local/share/urumi/seed/
+# Must-use plugin with the Storefront presentation tweaks (no theme credit, the homepage hero's styles).
+COPY mu-plugins/ /srv/wordpress/wp-content/mu-plugins/
 
 RUN set -eux; \
     cp "$PHP_INI_DIR/php.ini-production" "$PHP_INI_DIR/php.ini"; \
     a2enconf zz-urumi; \
     chmod 0755 /usr/local/bin/wp /usr/local/bin/urumi-bootstrap.sh; \
     chmod 0644 /usr/local/lib/wp-cli/wp-cli.phar /usr/local/lib/urumi/*; \
-    # Fail the build, not the pod, on a broken Apache config.
+    # Read-only for everyone but root, like the rest of the code (explicit modes: a checkout on a Windows
+    # drive marks every file executable).
+    find /usr/local/share/urumi /srv/wordpress/wp-content/mu-plugins \
+      \( -type d -exec chmod 0755 {} + \) -o \( -type f -exec chmod 0644 {} + \); \
+    # Fail the build, not the pod, on a PHP syntax error, a broken catalog or a broken Apache config.
+    for f in /usr/local/lib/urumi/*.php /srv/wordpress/wp-content/mu-plugins/*.php; do php -l "$f"; done; \
+    php -r 'json_decode(file_get_contents("/usr/local/share/urumi/seed/catalog.json"), true, 512, JSON_THROW_ON_ERROR);'; \
     apache2ctl -t; \
     # Sanity check that the phar runs (the build runs as root, hence --allow-root just here).
     wp --allow-root --path=/srv/wordpress --version

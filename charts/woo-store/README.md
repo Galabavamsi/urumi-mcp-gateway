@@ -60,13 +60,18 @@ step logs one line (`kubectl -n store logs deploy/wordpress -c bootstrap`):
 4. Run the DB migrations (`wp core update-db`, `wp wc update`).
 5. Enable HPOS with `wp wc hpos enable`.
 6. Run `configure-store.php` in a single WordPress load:
-   - store settings: name, Bengaluru address `IN:KA`, INR, `Asia/Kolkata`;
+   - store settings: name and tagline (`store.name`, `store.tagline`), Bengaluru address `IN:KA`, INR, `Asia/Kolkata`;
    - coming-soon off, shipping disabled, guest checkout on;
    - Cash on Delivery on, including for orders that need no shipping;
    - onboarding hidden; shop/cart/checkout/my-account pages present;
    - admin password synced from the Secret;
    - role `urumi_mcp_bot` (only the capabilities the six woo-mcp tools need: no deletes, settings or customers), user `mcp-bot` with that role, and its REST API key from Secret `woo-store-api`. The key is upserted in place, so rotation is safe;
-   - the 4 seed products, each created once per SKU. A seed the merchant later trashes or re-SKUs is never re-created;
+   - the shop's own content from the image (`images/wordpress/seed`): 5 product categories, 20 products with photos
+     (credits in `seed/CREDITS.md`), the Home page (front page, with a hero) and About page, and the main menu. Each
+     item is applied once in the store's life and remembered in an option, so whatever the merchant later edits or
+     deletes stays that way. The four products earlier versions seeded are completed with their photo, category and
+     descriptions only while they are still exactly as seeded. WordPress's sample post and page are removed if never
+     edited. Bank transfer is enabled once, after Cash on Delivery;
    - a final check that HPOS is active, the store is public and COD is on.
 
 Two steps must be explicit because a WP-CLI install never makes the first wp-admin visit. That

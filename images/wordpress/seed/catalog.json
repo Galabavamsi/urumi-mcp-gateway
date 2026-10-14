@@ -1,0 +1,330 @@
+{
+  "categories": [
+    {
+      "slug": "tea-coffee",
+      "name": "Tea & Coffee",
+      "description": "Loose tea, our house chai and South Indian filter coffee, packed in small batches.",
+      "image": "uru-chai-250.jpg"
+    },
+    {
+      "slug": "spices-pantry",
+      "name": "Spices & Pantry",
+      "description": "Single-origin spices ground in small lots, and raw honey from the Western Ghats.",
+      "image": "uru-chil-200.jpg"
+    },
+    {
+      "slug": "home-decor",
+      "name": "Home & Décor",
+      "description": "Brass, terracotta, blue pottery and woven reed for the home.",
+      "image": "uru-vase-01.jpg"
+    },
+    {
+      "slug": "kitchen-dining",
+      "name": "Kitchen & Dining",
+      "description": "Cast iron, stone, wood and clay for everyday cooking and serving.",
+      "image": "uru-tawa-12.jpg"
+    },
+    {
+      "slug": "bags-textiles",
+      "name": "Bags & Textiles",
+      "description": "Handloom cotton and jute: totes, throws and towels.",
+      "image": "uru-thrw-01.jpg"
+    }
+  ],
+  "products": [
+    {
+      "sku": "URU-CHAI-250",
+      "name": "Masala Chai Tin (250g)",
+      "category": "tea-coffee",
+      "regular_price": "299",
+      "weight": "0.32",
+      "image": "uru-chai-250.jpg",
+      "image_alt": "Masala chai in a clay kulhad on a wooden table",
+      "original": {
+        "short_description": "Assam black tea blended with cardamom, ginger and cinnamon."
+      },
+      "short_description": "Our house chai: strong Assam CTC tea with cardamom, dry ginger, cinnamon and a little clove, in a reusable tin.",
+      "description": "<p>This is the blend we brew at the shop every afternoon. Bold Assam CTC tea holds its own against milk and sugar, and the spices are ground in small batches so the ginger and cinnamon stay bright.</p>\n<p><strong>To brew:</strong> simmer one heaped teaspoon per cup in half water, half milk for 3 to 4 minutes, sweeten to taste and strain.</p>\n<ul>\n<li>Ingredients: Assam CTC black tea (85%), cardamom, dry ginger, cinnamon, clove</li>\n<li>Net weight: 250 g, about 100 cups</li>\n<li>Packed in a reusable tin; keep it closed and away from strong smells</li>\n</ul>",
+      "listed": "2026-06-05"
+    },
+    {
+      "sku": "URU-NILG-100",
+      "name": "Nilgiri Orange Pekoe Tea (100g)",
+      "category": "tea-coffee",
+      "regular_price": "349",
+      "stock": 64,
+      "weight": "0.12",
+      "listed": "2026-08-18",
+      "image": "uru-nilg-100.jpg",
+      "image_alt": "Whole-leaf black tea in a white bowl",
+      "short_description": "Whole-leaf black tea from the Nilgiri hills: bright, brisk and fragrant, good with or without milk.",
+      "description": "<p>Grown at high elevation in the Nilgiris, this orange pekoe grade tea brews a clear, golden-amber cup with a brisk, slightly fruity finish. It is lighter than our chai blend and lovely on its own or with a slice of lemon.</p>\n<p><strong>To brew:</strong> one teaspoon per cup, water just off the boil, steep for 3 to 4 minutes.</p>\n<ul>\n<li>Origin: the Nilgiris, Tamil Nadu</li>\n<li>Grade: orange pekoe, whole leaf</li>\n<li>Net weight: 100 g, about 40 cups</li>\n<li>Packed in a resealable kraft pouch</li>\n</ul>"
+    },
+    {
+      "sku": "URU-COFF-250",
+      "name": "Coorg Filter Coffee (250g)",
+      "category": "tea-coffee",
+      "regular_price": "389",
+      "stock": 85,
+      "featured": true,
+      "weight": "0.27",
+      "listed": "2026-07-09",
+      "image": "uru-coff-250.jpg",
+      "image_alt": "South Indian filter coffee in a steel tumbler and davara",
+      "short_description": "Medium-dark roast from Kodagu with 20% chicory, ground for the traditional South Indian filter.",
+      "description": "<p>Arabica and robusta grown under shade in Kodagu (Coorg), roasted medium-dark and blended with 20% chicory for the thick, aromatic decoction that South Indian filter coffee is known for.</p>\n<p><strong>To brew:</strong> put three tablespoons in the upper chamber of a filter, press lightly, pour in 150 ml of boiling water and let it drip for 15 to 20 minutes. Mix the decoction with hot milk and sugar.</p>\n<ul>\n<li>Origin: Kodagu, Karnataka</li>\n<li>Blend: 80% coffee (arabica and robusta), 20% chicory</li>\n<li>Grind: fine, for filters</li>\n<li>Net weight: 250 g</li>\n</ul>"
+    },
+    {
+      "sku": "URU-TULS-75",
+      "name": "Tulsi & Lemongrass Herbal Infusion (75g)",
+      "category": "tea-coffee",
+      "regular_price": "279",
+      "stock": 40,
+      "weight": "0.10",
+      "listed": "2026-09-02",
+      "image": "uru-tuls-75.jpg",
+      "image_alt": "A glass mug of golden herbal infusion on a wooden stump",
+      "short_description": "A caffeine-free blend of holy basil, lemongrass and dried ginger for an evening cup.",
+      "description": "<p>Whole tulsi (holy basil) leaves and lemongrass with a little dried ginger. It brews a pale golden, gently citrusy cup with no caffeine, which makes it a good one after dinner.</p>\n<p><strong>To brew:</strong> one teaspoon per cup, boiling water, steep for 5 minutes. Add honey if you like.</p>\n<ul>\n<li>Ingredients: tulsi leaves, lemongrass, dried ginger</li>\n<li>Caffeine-free</li>\n<li>Net weight: 75 g, about 35 cups</li>\n</ul>"
+    },
+    {
+      "sku": "URU-TURM-200",
+      "name": "Organic Turmeric Powder (200g)",
+      "category": "spices-pantry",
+      "regular_price": "199",
+      "weight": "0.22",
+      "image": "uru-turm-200.jpg",
+      "image_alt": "A bowl of turmeric powder with dried turmeric roots",
+      "original": {
+        "short_description": "Stone-ground single-origin turmeric."
+      },
+      "short_description": "Single-origin turmeric, sun-dried and stone-ground in small batches, with a deep colour and earthy aroma.",
+      "description": "<p>We buy whole dried turmeric from one farmers' co-operative near Erode and have it stone-ground in small lots, so the powder keeps its colour and aroma. Use it in dals, curries and pickles, or in a warm glass of haldi doodh.</p>\n<ul>\n<li>Ingredients: 100% turmeric</li>\n<li>Origin: Erode, Tamil Nadu</li>\n<li>Net weight: 200 g</li>\n<li>Store in an airtight jar, away from light</li>\n</ul>",
+      "listed": "2026-06-27"
+    },
+    {
+      "sku": "URU-CHIL-200",
+      "name": "Guntur Red Chilli Powder (200g)",
+      "category": "spices-pantry",
+      "regular_price": "179",
+      "stock": 120,
+      "weight": "0.22",
+      "listed": "2026-07-23",
+      "image": "uru-chil-200.jpg",
+      "image_alt": "Red chilli powder in a clay bowl surrounded by dried red chillies",
+      "short_description": "Hot, deep-red chilli powder ground from sun-dried Guntur chillies. No colour or salt added.",
+      "description": "<p>Guntur in Andhra Pradesh is known for fiery, flavourful chillies. We have whole sun-dried chillies ground with their seeds, which gives a properly hot powder with a rich red colour. A little goes a long way.</p>\n<ul>\n<li>Ingredients: 100% dried red chillies</li>\n<li>Heat: hot</li>\n<li>Origin: Guntur, Andhra Pradesh</li>\n<li>Net weight: 200 g; no added colour, salt or anti-caking agents</li>\n</ul>"
+    },
+    {
+      "sku": "URU-PEPR-100",
+      "name": "Malabar Black Pepper, Whole (100g)",
+      "category": "spices-pantry",
+      "regular_price": "249",
+      "sale_price": "219",
+      "stock": 96,
+      "weight": "0.12",
+      "listed": "2026-08-04",
+      "image": "uru-pepr-100.jpg",
+      "image_alt": "Whole black peppercorns in a wooden spoon",
+      "short_description": "Bold, aromatic whole peppercorns from Wayanad in Kerala. Grind them fresh for the best flavour.",
+      "description": "<p>Hand-picked and sun-dried in Wayanad, these large peppercorns have a sharp heat and a woody, citrusy aroma that ready-ground pepper loses within weeks. Keep a grinder of them next to the stove.</p>\n<ul>\n<li>Origin: Wayanad, Kerala (Malabar)</li>\n<li>Net weight: 100 g</li>\n<li>Store whole in an airtight jar and grind as needed</li>\n</ul>"
+    },
+    {
+      "sku": "URU-HONY-500",
+      "name": "Wild Forest Honey (500g)",
+      "category": "spices-pantry",
+      "regular_price": "449",
+      "stock": 0,
+      "weight": "0.75",
+      "listed": "2026-07-15",
+      "image": "uru-hony-500.jpg",
+      "image_alt": "Dark honey dripping from a wooden dipper into a glass jar",
+      "short_description": "Raw, unblended honey from forest hives in the Western Ghats. Dark, rich and slightly smoky.",
+      "description": "<p>This honey comes from wild hives in the forests of the Western Ghats and is only strained, never heated or blended. Its flavour changes with the season's flowers, so every batch tastes a little different. Crystals are natural: stand the jar in warm water to loosen it.</p>\n<ul>\n<li>Origin: Western Ghats</li>\n<li>Raw and unprocessed</li>\n<li>Net weight: 500 g, in a glass jar</li>\n<li>Not suitable for infants under 12 months</li>\n</ul>"
+    },
+    {
+      "sku": "URU-DIYA-02",
+      "name": "Brass Diya Set (2 pcs)",
+      "category": "home-decor",
+      "regular_price": "799",
+      "weight": "0.40",
+      "image": "uru-diya-02.jpg",
+      "image_alt": "A lit brass diya on a bed of red flower petals",
+      "original": {
+        "short_description": "A pair of hand-polished brass oil lamps."
+      },
+      "short_description": "A pair of solid brass oil lamps, cast and hand-polished in Moradabad. For festivals, puja and quiet evenings.",
+      "description": "<p>Each diya is sand-cast in brass and finished by hand, so the shine and the small marks of the mould differ slightly from lamp to lamp. Fill with ghee or oil and add a cotton wick.</p>\n<ul>\n<li>Material: brass</li>\n<li>Size: about 7 cm across and 3 cm high (each)</li>\n<li>Made in Moradabad, Uttar Pradesh</li>\n<li>Care: wipe dry after use; polish with lemon and salt or a brass cleaner</li>\n</ul>",
+      "listed": "2026-06-12"
+    },
+    {
+      "sku": "URU-PLNT-02",
+      "name": "Terracotta Face Planters (Set of 2)",
+      "category": "home-decor",
+      "regular_price": "649",
+      "stock": 18,
+      "weight": "1.10",
+      "listed": "2026-09-14",
+      "image": "uru-plnt-02.jpg",
+      "image_alt": "Two terracotta planters shaped like faces on a terracotta tray",
+      "short_description": "Two small hand-shaped terracotta planters with calm sculpted faces and a matching tray, for succulents, herbs or a desk plant.",
+      "description": "<p>Shaped by hand and fired in a wood kiln, these planters have the warm, slightly uneven finish of real terracotta. Each has a drainage hole, and the set comes with a terracotta tray to stand them on.</p>\n<ul>\n<li>Material: unglazed terracotta</li>\n<li>Size: about 10 cm high and 9 cm across (each); tray 24 cm</li>\n<li>Made by potters in Gorakhpur, Uttar Pradesh</li>\n<li>Care: terracotta breathes, so water sparingly and keep the tray underneath indoors</li>\n</ul>"
+    },
+    {
+      "sku": "URU-VASE-01",
+      "name": "Jaipur Blue Pottery Vase",
+      "category": "home-decor",
+      "regular_price": "1299",
+      "stock": 12,
+      "featured": true,
+      "weight": "0.60",
+      "listed": "2026-08-26",
+      "image": "uru-vase-01.jpg",
+      "image_alt": "Hand-painted blue pottery vases on a shelf",
+      "short_description": "A hand-painted vase in Jaipur's blue pottery tradition: cobalt and turquoise florals on a white quartz body.",
+      "description": "<p>Jaipur blue pottery is made without clay: the body is a mix of quartz powder, glass and fuller's earth, shaped by hand, painted with cobalt and turquoise glazes and fired at a low temperature. Every vase is painted freehand, so the pattern on yours will differ a little from the photo.</p>\n<ul>\n<li>Height: about 20 cm</li>\n<li>Made in Jaipur, Rajasthan</li>\n<li>Holds water for fresh flowers; hand-wash only</li>\n</ul>"
+    },
+    {
+      "sku": "URU-BASK-03",
+      "name": "Kauna Reed Nesting Baskets (Set of 3)",
+      "category": "home-decor",
+      "regular_price": "1499",
+      "stock": 9,
+      "weight": "1.40",
+      "listed": "2026-09-21",
+      "image": "uru-bask-03.jpg",
+      "image_alt": "Three woven reed baskets with handles stacked on a wooden bench",
+      "short_description": "Three sturdy baskets plaited by hand from kauna reed in Manipur. For laundry, toys, blankets or firewood.",
+      "description": "<p>Kauna is a water reed that grows in the wetlands of Manipur. Artisans dry it, plait it into thick braids and stitch the braids into baskets that are light, strong and a little springy. The three sizes nest inside one another when you are not using them.</p>\n<ul>\n<li>Material: kauna reed</li>\n<li>Sizes: about 38, 32 and 26 cm across</li>\n<li>Made in Manipur</li>\n<li>Care: keep dry; dust with a soft brush</li>\n</ul>"
+    },
+    {
+      "sku": "URU-TAWA-12",
+      "name": "Cast Iron Dosa Tawa (12 in)",
+      "category": "kitchen-dining",
+      "regular_price": "1149",
+      "stock": 22,
+      "featured": true,
+      "weight": "2.40",
+      "listed": "2026-07-30",
+      "image": "uru-tawa-12.jpg",
+      "image_alt": "A dosa cooking on a black cast iron tawa",
+      "short_description": "A heavy, pre-seasoned cast iron tawa for crisp dosas, rotis and parathas. It gets better with every use.",
+      "description": "<p>Cast in one piece in a family foundry in Tamil Nadu and pre-seasoned with vegetable oil, so it is ready to use. Cast iron holds its heat evenly, which is what gives dosas their crisp, even colour.</p>\n<ul>\n<li>Material: cast iron, pre-seasoned</li>\n<li>Diameter: 30 cm (12 in); weight about 2.4 kg</li>\n<li>Works on gas and induction</li>\n<li>Care: wash with hot water and a brush, dry it on the flame and wipe with a few drops of oil. Do not soak it or put it in the dishwasher.</li>\n</ul>"
+    },
+    {
+      "sku": "URU-MORT-01",
+      "name": "Granite Mortar and Pestle",
+      "category": "kitchen-dining",
+      "regular_price": "949",
+      "stock": 15,
+      "weight": "3.00",
+      "listed": "2026-08-11",
+      "image": "uru-mort-01.jpg",
+      "image_alt": "A grey granite mortar and pestle seen from above",
+      "short_description": "A heavy, hand-carved granite mortar and pestle for crushing spices, garlic and chutneys.",
+      "description": "<p>Carved from a single block of granite by stone workers in Tamil Nadu. The weight keeps it steady on the counter, and the slightly rough inside grips whole spices so they crush quickly.</p>\n<ul>\n<li>Material: granite</li>\n<li>Size: about 15 cm across and 9 cm high; weight about 3 kg</li>\n<li>Before the first use, grind a handful of raw rice to clean the stone</li>\n<li>Care: rinse with water, no soap, and dry well</li>\n</ul>"
+    },
+    {
+      "sku": "URU-KULH-06",
+      "name": "Terracotta Kulhad Cups (Set of 6)",
+      "category": "kitchen-dining",
+      "regular_price": "329",
+      "stock": 48,
+      "weight": "0.90",
+      "listed": "2026-09-08",
+      "image": "uru-kulh-06.jpg",
+      "image_alt": "Rows of clay kulhad cups filled with chai",
+      "short_description": "Six hand-thrown clay cups for chai, lassi or filter coffee. The unglazed clay adds an earthy note to every sip.",
+      "description": "<p>Kulhads are thrown on the wheel and fired in small batches, as they have been for the tea stalls of North India for generations. Ours are fired a little harder, so they can be washed and used again.</p>\n<ul>\n<li>Material: unglazed terracotta</li>\n<li>Capacity: about 120 ml each</li>\n<li>Care: soak in water for a few minutes before the first use; hand-wash only</li>\n</ul>"
+    },
+    {
+      "sku": "URU-BORD-01",
+      "name": "Sheesham Wood Chopping Board",
+      "category": "kitchen-dining",
+      "regular_price": "749",
+      "sale_price": "649",
+      "stock": 26,
+      "weight": "0.95",
+      "listed": "2026-09-26",
+      "image": "uru-bord-01.jpg",
+      "image_alt": "A dark sheesham wood chopping board with a hanging hole",
+      "short_description": "A solid sheesham (Indian rosewood) board with a hanging hole, for chopping, serving and everything in between.",
+      "description": "<p>Cut from a single piece of sheesham and finished with food-safe mineral oil. The dense grain is gentle on knife edges and handsome enough to bring to the table with fruit, cheese or warm rotis.</p>\n<ul>\n<li>Material: sheesham wood</li>\n<li>Size: about 35 × 25 × 2 cm</li>\n<li>Made in Saharanpur, Uttar Pradesh</li>\n<li>Care: hand-wash, dry upright and oil it now and then. Not for the dishwasher.</li>\n</ul>"
+    },
+    {
+      "sku": "URU-TOTE-01",
+      "name": "Handloom Cotton Tote",
+      "category": "bags-textiles",
+      "regular_price": "499",
+      "weight": "0.25",
+      "image": "uru-tote-01.jpg",
+      "image_alt": "An unbleached cotton tote bag with long handles",
+      "original": {
+        "short_description": "Hand-woven cotton tote bag."
+      },
+      "short_description": "A roomy everyday tote, hand-woven from thick unbleached cotton, with long shoulder straps.",
+      "description": "<p>Woven on handlooms in Karur, Tamil Nadu. The heavy cotton is left unbleached, and the straps are long enough to wear on the shoulder and stitched twice where they meet the bag.</p>\n<ul>\n<li>Material: 100% handloom cotton, unbleached</li>\n<li>Size: about 40 × 38 cm; straps 60 cm</li>\n<li>Care: machine-wash cold and dry in the shade. Expect a little shrinkage on the first wash.</li>\n</ul>",
+      "listed": "2026-06-20"
+    },
+    {
+      "sku": "URU-JUTE-01",
+      "name": "Crochet Jute Sling Bag",
+      "category": "bags-textiles",
+      "regular_price": "899",
+      "stock": 14,
+      "weight": "0.35",
+      "listed": "2026-09-17",
+      "image": "uru-jute-01.jpg",
+      "image_alt": "A crocheted jute bucket bag with a tan leather strap and tassel",
+      "short_description": "A hand-crocheted jute bucket bag with a leather strap and tassel, light enough to carry every day.",
+      "description": "<p>Crocheted by hand from fine jute yarn spun in West Bengal, with a vegetable-tanned leather strap and tassel. It holds a phone, wallet, keys and a small water bottle.</p>\n<ul>\n<li>Material: jute; leather strap</li>\n<li>Size: about 22 × 24 cm; adjustable strap</li>\n<li>Made in Kolkata, West Bengal</li>\n<li>Care: spot-clean with a damp cloth and keep dry</li>\n</ul>"
+    },
+    {
+      "sku": "URU-THRW-01",
+      "name": "Handwoven Cotton Throw",
+      "category": "bags-textiles",
+      "regular_price": "1899",
+      "sale_price": "1599",
+      "stock": 11,
+      "featured": true,
+      "weight": "1.20",
+      "listed": "2026-08-21",
+      "image": "uru-thrw-01.jpg",
+      "image_alt": "A striped handwoven throw with fringes draped over a wooden stool",
+      "short_description": "A soft striped throw woven on handlooms in Panipat, with knotted fringes. For the sofa, the bed or the evening chill.",
+      "description": "<p>Woven on handlooms in Panipat from thick cotton yarn in indigo, rust and natural stripes. It is heavy enough to keep off the evening chill and soft enough for the sofa, and the colours are dyed to stay put wash after wash.</p>\n<ul>\n<li>Material: 100% cotton</li>\n<li>Size: about 125 × 150 cm, plus fringes</li>\n<li>Made in Panipat, Haryana</li>\n<li>Care: machine-wash cold on a gentle cycle and dry in the shade</li>\n</ul>"
+    },
+    {
+      "sku": "URU-TOWL-02",
+      "name": "Handloom Cotton Towels (Set of 2)",
+      "category": "bags-textiles",
+      "regular_price": "599",
+      "stock": 30,
+      "weight": "0.50",
+      "listed": "2026-10-01",
+      "image": "uru-towl-02.jpg",
+      "image_alt": "A diamond-weave cotton towel with tasselled ends",
+      "short_description": "Light, quick-drying handloom towels in a diamond weave, with tasselled ends. They get softer with every wash.",
+      "description": "<p>Woven in Kannur, Kerala, where handloom towels have been made for a century. The thin, absorbent cotton dries quickly even in humid weather, which is why towels like these are used all along the coast.</p>\n<ul>\n<li>Material: 100% cotton</li>\n<li>Size: about 75 × 150 cm (each)</li>\n<li>Made in Kannur, Kerala</li>\n<li>Care: machine-wash; wash dark colours separately the first few times</li>\n</ul>"
+    }
+  ],
+  "hero": {
+    "image": "hero.jpg",
+    "image_alt": "A steel spice box with turmeric, chilli and other ground spices"
+  },
+  "pages": [
+    {
+      "key": "home",
+      "title": "Home",
+      "slug": "home",
+      "file": "home.html",
+      "template": "template-homepage.php"
+    },
+    {
+      "key": "about",
+      "title": "About us",
+      "slug": "about",
+      "file": "about.html"
+    }
+  ]
+}

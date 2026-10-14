@@ -23,6 +23,8 @@ export interface ChatDeps {
   anthropicApiKey: string;
   model: string;
   storeTz: string;
+  /** The shop's name in the system prompt (STORE_NAME). */
+  storeName: string;
   /** Optional: the Messages API to call. Defaults to a real Anthropic client built from anthropicApiKey; tests pass a fake. */
   messagesApi?: MessagesApi;
   /** Optional clock (tests). */
@@ -87,7 +89,7 @@ export function createChatRoutes(deps: ChatDeps): Hono<AppEnv> {
         stream.onAbort(() => disconnected.abort());
         const signal = AbortSignal.any([c.req.raw.signal, disconnected.signal]);
         const emit: Emit = (event, data) => stream.writeSSE({ event, data: JSON.stringify(data) });
-        await runTurn({ deps, llm, approvals, user, start, systemPrompt: buildSystemPrompt(now(), deps.storeTz), emit, signal });
+        await runTurn({ deps, llm, approvals, user, start, systemPrompt: buildSystemPrompt(now(), deps.storeTz, deps.storeName), emit, signal });
       } finally {
         busyUsers.delete(user.id);
       }
