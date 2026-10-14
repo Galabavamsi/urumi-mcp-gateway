@@ -1,11 +1,12 @@
 // Every route of the dashboard. Public: login and invite acceptance. Everything else needs a session;
 // Members, Tool policies and Observability additionally need the admin role.
+import { lazy, Suspense } from 'react';
 import { Navigate, Route, Routes } from 'react-router';
 import { RequireAdmin, RequireAuth, SessionExpiryBridge } from './auth/session';
+import { Spinner } from './components/Feedback';
 import { AppLayout } from './layout/AppLayout';
 import { AcceptInvitePage } from './pages/AcceptInvitePage';
 import { AuditPage } from './pages/AuditPage';
-import { ChatPage } from './pages/chat/ChatPage';
 import { KeysPage } from './pages/keys/KeysPage';
 import { LoginPage } from './pages/LoginPage';
 import { MembersPage } from './pages/members/MembersPage';
@@ -13,6 +14,10 @@ import { NotFoundPage } from './pages/NotFoundPage';
 import { ObservabilityPage } from './pages/observability/ObservabilityPage';
 import { PoliciesPage } from './pages/PoliciesPage';
 import { ServersPage } from './pages/servers/ServersPage';
+
+// The chat page carries the Markdown renderer (react-markdown + remark-gfm), the largest dependency in the app,
+// so it is a separate chunk that loads on the first visit to /chat instead of with every page.
+const ChatPage = lazy(() => import('./pages/chat/ChatPage').then((m) => ({ default: m.ChatPage })));
 
 export function App() {
   return (
@@ -26,7 +31,14 @@ export function App() {
           <Route element={<AppLayout />}>
             <Route index element={<Navigate to="/servers" replace />} />
             <Route path="servers" element={<ServersPage />} />
-            <Route path="chat" element={<ChatPage />} />
+            <Route
+              path="chat"
+              element={
+                <Suspense fallback={<Spinner />}>
+                  <ChatPage />
+                </Suspense>
+              }
+            />
             <Route path="keys" element={<KeysPage />} />
             <Route path="audit" element={<AuditPage />} />
             <Route element={<RequireAdmin />}>

@@ -1,6 +1,6 @@
 import { ChevronRight, ShieldQuestionMark, Wrench } from 'lucide-react';
 import { useId, useState } from 'react';
-import { parseInline } from '../../chat/inline';
+import { Markdown } from '../../chat/Markdown';
 import { awaitsApproval, type AssistantTurn, type ToolCall } from '../../chat/transcript';
 import { ErrorNote, Spinner } from '../../components/Feedback';
 import { formatDuration, plural } from '../../lib/format';
@@ -67,20 +67,8 @@ export function AssistantReply({ turn, onAnswer }: { turn: AssistantTurn; onAnsw
 
 function AgentText({ text }: { text: string }) {
   return (
-    <div className="rounded-2xl rounded-bl-md border border-line bg-sunken px-4 py-3 text-[15px] leading-relaxed whitespace-pre-wrap break-words text-ink">
-      {parseInline(text).map((segment, i) =>
-        segment.kind === 'bold' ? (
-          <strong key={i} className="font-semibold">
-            {segment.text}
-          </strong>
-        ) : segment.kind === 'code' ? (
-          <code key={i} className="mono rounded bg-surface px-1 py-px">
-            {segment.text}
-          </code>
-        ) : (
-          <span key={i}>{segment.text}</span>
-        ),
-      )}
+    <div className="min-w-0 rounded-2xl rounded-bl-md border border-line bg-sunken px-4 py-3 text-[15px] leading-relaxed break-words text-ink">
+      <Markdown text={text} />
     </div>
   );
 }
