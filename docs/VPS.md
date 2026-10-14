@@ -9,21 +9,23 @@ Only values change between the two environments (table in [What changes vs local
 Every step below is a script in `scripts/vps/`. They are safe to re-run, and they never touch the local `k3d-urumi` cluster.
 
 ```
- your laptop (WSL)                                      AWS ap-south-1 (Mumbai)
- ┌──────────────────────────┐   SSH :22 (your IP only)  ┌─────────────────────────────────────────┐
- │ kubectl / helm           │══════ tunnel ═══════════► │ EC2 t3.large, Ubuntu 24.04, Elastic IP  │
- │  -> 127.0.0.1:16443      │   (to 127.0.0.1:6443)     │  k3s v1.36.5+k3s1 (one node)            │
- └──────────────────────────┘                           │   Traefik :80 -> 301 to :443 (TLS)      │
- browsers, Claude Code ──── HTTPS :443 ───────────────► │   cert-manager + Let's Encrypt (HTTP-01)│
- Cloudflare DNS: *.urumi A <Elastic IP>, DNS only       │   store / platform / mcp-upstreams      │
-                                                        └─────────────────────────────────────────┘
+ your laptop (WSL)                                       AWS ap-south-1 (Mumbai)
+ ┌──────────────────────────┐ ssh through Session Mgr  ┌─────────────────────────────────────────┐
+ │ kubectl / helm           │═══════ tunnel ══════════►│ EC2 t3.large, Ubuntu 24.04, Elastic IP  │
+ │  -> 127.0.0.1:16443      │ (HTTPS via AWS; no port  │  SSM agent -> sshd -> 127.0.0.1:6443    │
+ └──────────────────────────┘  open for it on the VPS) │  k3s v1.36.5+k3s1 (one node)            │
+                                                       │   Traefik :80 -> 301 to :443 (TLS)      │
+ browsers, Claude Code ──── HTTPS :443 ──────────────► │   cert-manager + Let's Encrypt (HTTP-01)│
+ Cloudflare DNS: *.urumi A <Elastic IP>, DNS only      │   store / platform / mcp-upstreams      │
+                                                       └─────────────────────────────────────────┘
+ Inbound in the security group: 80 and 443, nothing else.
 ```
 
 | Step | Script | Runs where | Time |
 |---|---|---|---|
 | 1. Create the machine | `provision-aws.sh up` | your machine (AWS CLI) | ~2 min |
 | 2. DNS record | Cloudflare dashboard | browser | ~1 min (+ propagation) |
-| 3. Install k3s | `bootstrap.sh` (sends `bootstrap-k3s.sh`) | on the VPS, over SSH | ~3 min |
+| 3. Install k3s | `bootstrap.sh` (sends `bootstrap-k3s.sh`) | on the VPS, over ssh through Session Manager | ~3 min |
 | 4. kubeconfig + tunnel | `kubeconfig.sh`, `tunnel.sh` | WSL | seconds |
 | 5. Cluster add-ons | `install-addons.sh` | WSL, through the tunnel | ~2 min |
 | 6. Images | CI pushes to GHCR | GitHub Actions | per push |
@@ -31,12 +33,16 @@ Every step below is a script in `scripts/vps/`. They are safe to re-run, and the
 
 ## Prerequisites
 
-- **AWS CLI v2** with working credentials for the account. For example, run `aws login` once, then `export AWS_PROFILE=aws-main`.
+- **AWS CLI v2** with working credentials for the account, selected with `export AWS_PROFILE=aws-main` (that profile holds access keys in `~/.aws/credentials`; an `aws login` or SSO profile works the same way).
   - Check with `aws sts get-caller-identity`.
   - The scripts pass `--region ap-south-1` on every call, so an `AWS_REGION` set for something else does not matter.
-  - Prefer an IAM Identity Center or IAM user with MFA over the root user for day-to-day CLI work.
-  - `provision-aws.sh` runs in WSL, Linux, macOS or Git Bash on Windows. On this laptop the AWS CLI lives on Windows, so run it from Git Bash and copy the key into WSL as it tells you.
+  - This deployment uses the root user's access keys, which is what the owner chose for a short-lived take-home account. The better setup is an IAM Identity Center or IAM user with MFA; for day-to-day operation it needs little more than `ssm:StartSession` on this instance and on the document `AWS-StartSSHSession` (plus read-only EC2 calls for `status`).
+  - `provision-aws.sh` runs in WSL, Linux, macOS or Git Bash on Windows. On this laptop it runs from Git Bash with the Windows AWS CLI; copy the SSH key into WSL as it tells you.
 - **In WSL:** `kubectl` 1.36, `helm` 4.3 (both from `scripts/setup-wsl-docker.sh`), plus `ssh`, `curl`, `git` and `envsubst` (Ubuntu ships them).
+- **Also in WSL, for ssh through Session Manager:** the AWS CLI v2, AWS's `session-manager-plugin`, and AWS credentials.
+  - The CLI from AWS's [installer](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html); check the zip's PGP signature as described there. Without sudo: `./aws/install -i ~/.local/aws-cli -b ~/.local/bin`.
+  - The plugin from AWS's [Ubuntu package](https://docs.aws.amazon.com/systems-manager/latest/userguide/install-plugin-debian-and-ubuntu.html). Without sudo: `dpkg-deb -x session-manager-plugin.deb ~/.local/session-manager-plugin`, then link `~/.local/session-manager-plugin/usr/local/sessionmanagerplugin/bin/session-manager-plugin` into `~/.local/bin`.
+  - Credentials: share the Windows ones with `ln -s "/mnt/c/Users/<you>/.aws" ~/.aws`. `AWS_PROFILE` must be set in **every** WSL terminal that runs `bootstrap.sh`, `kubeconfig.sh`, `tunnel.sh` or `ssh.sh` (there is no default profile), so persist it: `echo 'export AWS_PROFILE=aws-main' >> ~/.bashrc`. The identity needs `ssm:StartSession` on the instance and on the document `AWS-StartSSHSession`.
 - **Cloudflare** access to the `humanslop.in` zone.
 - **Images in GHCR.** CI builds `ghcr.io/galabavamsi/{wordpress,woo-mcp,supplier-mcp,gateway,dashboard}`, tagged with the first 7 hex digits of the commit.
   - While the repository is private, the packages are private too. Then `deploy.sh` needs `GHCR_PULL_TOKEN`: a classic GitHub token with only `read:packages`.
@@ -76,8 +82,9 @@ Everything is tagged `Project=urumi` and named `urumi-vps`. `up` creates:
 | Resource | Settings | Why |
 |---|---|---|
 | Key pair `urumi-vps` (ed25519) | private key saved to `~/.ssh/urumi-vps.pem`, mode 600, never printed | AWS keeps only the public half and cannot hand out the private key again: don't lose the file |
-| Security group `urumi-vps` | tcp 80 and 443 from `0.0.0.0/0` and `::/0`; tcp 22 from **your IP/32** only; nothing else | 6443 (the Kubernetes API) is never open; kubectl uses the SSH tunnel |
-| Instance `urumi-vps` | t3.large; latest Ubuntu 24.04 amd64 AMI from Canonical's public SSM parameter; 40 GB encrypted gp3 root disk with `DeleteOnTermination=false`; IMDSv2 required with hop limit 1; termination protection; no IAM role | security notes below |
+| IAM role and instance profile `urumi-vps-ssm` | trusted by EC2 only; one inline policy with the five actions Session Manager needs: `ssm:UpdateInstanceInformation` and `ssmmessages:` `CreateControlChannel`, `CreateDataChannel`, `OpenControlChannel`, `OpenDataChannel` | the SSM agent on the VPS can register and carry sessions, and its credentials can do nothing else. The managed `AmazonSSMManagedInstanceCore` would also let the machine read Parameter Store |
+| Security group `urumi-vps` | tcp 80 and 443 from `0.0.0.0/0` and `::/0`; nothing else | no 22: ssh goes through Session Manager. No 6443: kubectl uses the SSH tunnel |
+| Instance `urumi-vps` | t3.large; latest Ubuntu 24.04 amd64 AMI from Canonical's public SSM parameter (it ships the SSM agent); instance profile `urumi-vps-ssm`; 40 GB encrypted gp3 root disk with `DeleteOnTermination=false`; IMDSv2 required with hop limit 1; termination protection | security notes below |
 | Elastic IP | associated with the instance | the address, and so the DNS record, survive stop/start and instance replacement |
 
 Then it pins the machine's **SSH host key**. cloud-init prints the host keys to the instance's console on the
@@ -87,13 +94,38 @@ secret). Every ssh in `scripts/vps/` uses only that file with `StrictHostKeyChec
 connection refuses a machine that is not ours. Without it the first connection would trust whatever key
 answered, and someone on your network path at that moment could receive the kubeconfig and, through
 `deploy.sh`, every Secret. The key appears about a minute after the first boot; `up` waits up to 5 minutes, and
-`status` pins it later if needed.
+`status` pins it later if needed. The key is filed under two names: the instance id, which ssh uses through
+Session Manager, and the Elastic IP, for the break-glass direct ssh.
 
-At the end it prints the IP, the next commands and the DNS record to add.
+Last, `up` waits until the SSM agent on the instance has registered with Session Manager (a new instance does so
+a minute or two after it boots), then prints the IP, the next commands and the DNS record to add.
 
-- **Your IP changed** (new Wi-Fi, a new day): `bash scripts/vps/provision-aws.sh allow-my-ip` points the SSH rule at your current address.
-- **Overview at any time:** `bash scripts/vps/provision-aws.sh status` shows the state, the IP, the SSH rule vs your IP, and what public DNS answers.
+- **Overview at any time:** `bash scripts/vps/provision-aws.sh status` shows the state, Session Manager, the IP, whether port 22 is open, and what public DNS answers.
 - **Key created from Git Bash on Windows:** copy it into WSL once with the `install -m 600 ...` command the script prints. ssh, kubectl and helm run there.
+
+### SSH through Session Manager
+
+Every ssh in `scripts/vps/` (bootstrap, kubeconfig, the tunnel, `ssh.sh`) goes through AWS Systems Manager
+Session Manager, not to port 22 (`scripts/vps/common.sh`):
+
+```
+ssh -o ProxyCommand="aws ssm start-session --target %h --document-name AWS-StartSSHSession --parameters portNumber=%p" ubuntu@i-0123...
+```
+
+- The SSM agent on the VPS keeps an outbound HTTPS connection to AWS. A session started with
+  `AWS-StartSSHSession` reaches sshd on localhost through it, so **no inbound port is open for ssh**, and it works
+  from any network: a new Wi-Fi or a new public IP changes nothing.
+- **AWS credentials decide who may connect**: only an identity allowed `ssm:StartSession` on the instance and the
+  document can open a session, and every session start is a CloudTrail event. Here that identity is the root
+  user (the access keys of profile `aws-main`), which may do anything in the account; an IAM identity with MFA,
+  limited to those two resources, narrows it to exactly this (see [Prerequisites](#prerequisites)).
+- **ssh still runs on top**: the pinned host key is checked and the login uses the key pair, so a Session Manager
+  channel alone gets neither a shell nor the kubeconfig.
+- The scripts read the instance id from `.vps/known_hosts`, so nothing needs to be exported.
+  `bash scripts/vps/ssh.sh` opens a shell, `bash scripts/vps/ssh.sh <command>` runs one.
+- **Break-glass**, for when Session Manager is unavailable: `provision-aws.sh allow-my-ip` opens port 22 to your
+  current IP/32, `VPS_SSH_VIA=direct` makes the scripts ssh to the Elastic IP, and `provision-aws.sh close-ssh`
+  removes the rule again. `up` never opens port 22, and `status` warns while it is open.
 
 ## 2. DNS: one wildcard record, grey cloud
 
@@ -114,8 +146,7 @@ Check with `bash scripts/vps/provision-aws.sh status`. Both hosts must resolve t
 ## 3. Install k3s on the VPS
 
 ```bash
-export VPS_HOST=<elastic-ip>
-bash scripts/vps/bootstrap.sh     # sends bootstrap-k3s.sh over ssh with the pinned host key
+bash scripts/vps/bootstrap.sh     # sends bootstrap-k3s.sh over ssh (Session Manager, pinned host key)
 ```
 
 `bootstrap-k3s.sh` runs on the VPS as `ubuntu` and calls `sudo` itself. It is safe to re-run. Its two optional
@@ -145,7 +176,7 @@ kubectl --kubeconfig ~/.kube/urumi-vps.yaml get nodes
 ```
 
 **`kubeconfig.sh`:**
-- Copies `/etc/rancher/k3s/k3s.yaml` over SSH (root-only, hence `sudo`).
+- Copies `/etc/rancher/k3s/k3s.yaml` over ssh (root-only, hence `sudo`).
 - Points it at `https://127.0.0.1:16443`, the local end of the tunnel.
 - Renames k3s's generic `default` cluster, user and context to `urumi-vps`.
 
@@ -153,9 +184,11 @@ kubectl --kubeconfig ~/.kube/urumi-vps.yaml get nodes
 - `export KUBECONFIG=~/.kube/urumi-vps.yaml`, or
 - `--kubeconfig ~/.kube/urumi-vps.yaml` on each command.
 
-**`tunnel.sh`** runs `ssh -N -L 127.0.0.1:16443:127.0.0.1:6443` with keepalives every 30 s.
+**`tunnel.sh`** runs `ssh -N -L 127.0.0.1:16443:127.0.0.1:6443` through Session Manager, with keepalives every 30 s.
 - The local end listens on loopback only.
 - The API server's own port is reachable only from the VPS itself.
+- The keepalives also keep the session clear of Session Manager's idle timeout (20 minutes by default).
+- If the AWS credentials stop working (an `aws login` or SSO session expires; access keys do not), the tunnel drops and keeps retrying until they are renewed. In a new terminal, set `AWS_PROFILE` first.
 
 All later scripts use context `urumi-vps` in `~/.kube/urumi-vps.yaml`, whatever your current context is, and they refuse `k3d-urumi`. `KUBE_CONTEXT` and `KUBECONFIG_FILE` override this (`scripts/vps/common.sh`).
 
@@ -296,9 +329,10 @@ On an https store, check `c6` of `e2e-store.mjs` signs its WooCommerce REST call
 | Back up now / copy off the VPS | `KUBECONFIG=~/.kube/urumi-vps.yaml bash scripts/backup/backup-now.sh all --context urumi-vps`, then `fetch.sh store` and `fetch.sh platform` with the same options |
 | Roll back the store | database migrations only go forward: `deploy.sh` dumps the store before a WordPress image change and prints the undo commands: `helm … rollback woo-store <revision>` first, then `scripts/backup/restore-store.sh <that dump>` (docs/OPERATIONS.md) |
 | Rotate an `.env` secret | edit `.env`, run `deploy.sh` (re-applies it), restart the gateway: `kubectl … -n platform rollout restart deploy/gateway` |
-| Your IP changed | `bash scripts/vps/provision-aws.sh allow-my-ip`, then restart `tunnel.sh` |
+| A shell on the VPS | `bash scripts/vps/ssh.sh` (through Session Manager; a new IP or network needs nothing) |
+| Session Manager unavailable | break-glass: `provision-aws.sh allow-my-ip`, then `VPS_SSH_VIA=direct bash scripts/vps/ssh.sh` (or `tunnel.sh`); afterwards `provision-aws.sh close-ssh` |
 | Pause to save credits | `provision-aws.sh stop`, and later `start` (same IP and data) |
-| Kernel update pending | `ssh -i ~/.ssh/urumi-vps.pem -o UserKnownHostsFile=.vps/known_hosts ubuntu@$VPS_HOST sudo reboot` from the repo root (pods come back by themselves in ~2 min) |
+| Kernel update pending | `bash scripts/vps/ssh.sh sudo reboot` (pods come back by themselves in ~2 min, then restart `tunnel.sh`) |
 | Instance replaced, same IP | `provision-aws.sh up` (or `status`) pins the new instance's host key, then steps 3-5 |
 
 ## What changes vs local
@@ -331,7 +365,7 @@ Everything not listed is identical: templates, NetworkPolicies, probes, security
 | all charts | `imagePullSecrets` | `[]` | `[]`; `deploy.sh` adds `ghcr-pull` when that Secret exists |
 | cluster | Traefik | defaults (plain http) | HTTP→HTTPS redirect (`cluster/traefik-prod.yaml`) |
 | cluster | cert-manager | not installed | v1.21.2 + two Let's Encrypt ClusterIssuers |
-| cluster | k3s | k3d (k3s in Docker), API on 127.0.0.1:6550 | k3s systemd service, Secrets encrypted at rest, API only through the SSH tunnel |
+| cluster | k3s | k3d (k3s in Docker), API on 127.0.0.1:6550 | k3s systemd service, Secrets encrypted at rest, API only through the SSH tunnel (over Session Manager) |
 | cluster | Secrets | `scripts/secrets.sh` from `.env` | the same script, aimed at the VPS by `deploy.sh` |
 
 ### Resource budget (t3.large: 2 vCPU, 8 GiB)
@@ -363,28 +397,31 @@ This leaves headroom:
 
 - **The Kubernetes API is never public.**
   - Port 6443 is not in the security group.
-  - kubectl reaches the API only through `tunnel.sh`: an SSH local forward, authenticated with your key, from your IP.
+  - kubectl reaches the API only through `tunnel.sh`: an SSH local forward, over Session Manager, authenticated by IAM and then by your SSH key.
   - The local end listens on 127.0.0.1 only.
   - The kubeconfig holds cluster-admin credentials: mode 600, a separate file, never printed.
 - **SSH:**
-  - Port 22 is open only to your current IP/32; `allow-my-ip` moves it.
+  - **No inbound port.** ssh reaches sshd through Session Manager (see [SSH through Session Manager](#ssh-through-session-manager)), so the security group has no rule for 22 and there is nothing to scan or brute-force.
+  - Three checks in a row: AWS credentials allowed `ssm:StartSession`, the pinned host key, the SSH key. Today those credentials are the root user's access keys, so whoever holds them holds the whole account anyway; an IAM identity with MFA and only `ssm:StartSession` would make the first check a narrow one.
+  - Each session start is recorded in CloudTrail.
+  - Break-glass direct ssh opens 22 to one IP/32 only, on request (`allow-my-ip`), and `status` flags it until `close-ssh`.
   - Key-only login; no passwords, no root login.
   - Only local port forwarding (`AllowTcpForwarding local`).
   - The ed25519 key is generated by AWS and written straight to a mode-600 file.
   - The host key is pinned from the EC2 console output before the first connection (`.vps/known_hosts`,
     `StrictHostKeyChecking=yes`), never trusted on first use.
-- **IMDSv2 only, hop limit 1, no IAM role.**
+- **IMDSv2 only, hop limit 1, and a role that can only run Session Manager.**
   - The instance metadata service answers only with a session token, which needs a PUT. With hop limit 1, the token reply cannot cross the extra network hop into a pod.
-  - So a compromised pod (or an SSRF in the gateway) cannot read instance metadata, let alone credentials.
-  - There is no role to steal anyway.
+  - So a compromised pod (or an SSRF in the gateway) cannot read instance metadata, let alone the role's credentials. None of our pods uses the host network.
   - The gateway's NetworkPolicy also blocks 169.254.0.0/16, and its SSRF guard blocks the metadata IP.
+  - Even with root on the machine, the role's credentials allow only the five Session Manager actions: register this instance and open session channels. They read no data, start no sessions elsewhere and change nothing in the account.
 - **Data at rest:**
   - k3s encrypts Secrets before they reach its datastore (`secrets-encryption: true`).
   - The whole EBS volume is also encrypted (AWS-managed key).
   - The root volume survives an accidental termination (`DeleteOnTermination=false`), and termination protection is on.
 - **Security group:**
-  - Inbound is only 80, 443 and 22 (yours).
-  - Egress is open: image pulls, Let's Encrypt, Anthropic, Firecrawl and AgentMail need it.
+  - Inbound is only 80 and 443.
+  - Egress is open: image pulls, Let's Encrypt, Anthropic, Firecrawl, AgentMail and the SSM agent's HTTPS connection to AWS need it.
   - Inside the cluster, egress is narrowed per pod by the default-deny NetworkPolicies.
 - **TLS everywhere:**
   - Let's Encrypt certificates, renewed automatically about 30 days before expiry.
@@ -427,14 +464,15 @@ The upgrade/rollback demo runs against the VPS too; it ships a deliberately brok
 bash scripts/vps/provision-aws.sh down
 ```
 
-1. It lists every resource tagged `Project=urumi` (instance, disk, Elastic IP, security group, key pair).
+1. It lists every resource tagged `Project=urumi` (instance, disk, Elastic IP, security group, key pair, IAM role and instance profile).
 2. It asks you to type `destroy urumi-vps`.
 3. Then it:
    - turns off termination protection;
    - terminates the instance;
    - deletes the kept disk;
    - releases the IP;
-   - deletes the security group and the key pair.
+   - deletes the security group and the key pair;
+   - deletes the instance profile and the IAM role `urumi-vps-ssm`.
 
 Afterwards:
 - Remove the Cloudflare `*.urumi` record.
@@ -447,8 +485,11 @@ Afterwards:
 |---|---|
 | `deploy.sh`: certificate not Ready | DNS first (`provision-aws.sh status`). Then `kubectl -n store get certificaterequests,orders,challenges` and `kubectl -n store describe challenges`. If the reason mentions rate limits, switch to `CLUSTER_ISSUER=letsencrypt-staging` and wait. If cert-manager's self-check cannot reach the host from inside the cluster (`propagation check failed`) while the URL works from outside, the http01 solver's `waitInsteadOfSelfCheck` option in `cluster-issuers.yaml` skips the self-check |
 | Browser shows "TRAEFIK DEFAULT CERT" | normal for a few seconds right after issuance (`deploy.sh` waits for it); if it stays, `kubectl -n store get secret woo-store-tls` and the Traefik logs |
-| `tunnel.sh` keeps reconnecting | your IP changed (`provision-aws.sh allow-my-ip`) or the instance is stopped (`status`) |
-| ssh: `Host key verification failed` | the instance was replaced (new keys behind the same IP): `provision-aws.sh status` pins the new key. If the instance was **not** replaced, stop: something else answered on that address |
+| `tunnel.sh` keeps reconnecting | no working AWS credentials in that terminal (`aws sts get-caller-identity`: is `AWS_PROFILE` set there? an expired `aws login`/SSO session?), or the instance is stopped, or its agent is not online (`provision-aws.sh status`) |
+| ssh: `TargetNotConnected` | the SSM agent is not registered or not online: `status` shows `Session Mgr`; a reboot (`aws ec2 reboot-instances --region ap-south-1 --instance-ids <id>`) restarts it, and meanwhile the break-glass direct ssh works. Or `.vps/known_hosts` still names an instance that was replaced: `provision-aws.sh status` pins the new one |
+| `does not name the instance (an older provision-aws.sh wrote it)` | run `provision-aws.sh status`: it re-files the pinned key under the instance id (same key, no console read) |
+| ssh over Session Manager: `aws` or `session-manager-plugin` not found | install both in WSL ([Prerequisites](#prerequisites)); with `~/.local/bin`, make sure it is on `PATH` |
+| ssh: `Host key verification failed` | (direct ssh, or `VPS_INSTANCE_ID` set by hand) the instance was replaced (new keys): `provision-aws.sh status` pins the new key. If the instance was **not** replaced, stop: something else answered |
 | `no pinned host key in .vps/known_hosts` | run `provision-aws.sh status` (from where the AWS CLI works) to read the key from the console output |
 | `deploy.sh`: "charts/ has uncommitted changes" | commit them (CI then builds that commit and its images) and deploy that commit |
 | `deploy.sh`: "charts/ differ between <TAG> and HEAD" | you asked for older images with newer templates: `helm rollback` to an older revision, or deploy from a checkout of that commit |
@@ -458,7 +499,9 @@ Afterwards:
 
 ## How this was tested
 
-No AWS resource was created while writing these scripts; `provision-aws.sh plan` (read-only lookups) was run against the account. Everything else was rehearsed locally:
+The scripts were first written without creating any AWS resource (`provision-aws.sh plan`, read-only lookups,
+was run against the account) and rehearsed locally as described below; then they built the live deployment
+(README, "Status"). Rehearsal:
 
 - **Shell scripts:** `scripts/vps/*.sh` pass shellcheck 0.11.0 (`-S style`, sourced files followed).
 - **Throwaway k3d cluster** (k3s v1.36.5, separate network and ports). The real `install-addons.sh` and `deploy.sh` were run against it:
@@ -487,3 +530,16 @@ No AWS resource was created while writing these scripts; `provision-aws.sh plan`
     A redeploy of the same tag took no dump.
   - Helm 4.3 with a Job that fails after 20 s: `--wait` reported the release deployed at once, while
     `--wait --wait-for-jobs` failed it.
+- **Session Manager, on the live instance** (2026-10-14), which `up` had launched without a role:
+  - `provision-aws.sh up` created the `urumi-vps-ssm` role and instance profile and attached it to the running
+    instance. Its SSM agent had backed off after failing without credentials, so it was restarted once
+    (`sudo snap restart amazon-ssm-agent`, over the old direct ssh); `up` then reported it online. Its log
+    shows `AccessDenied` for Run Command and State Manager calls (`ec2messages:GetMessages`,
+    `ssm:ListInstanceAssociations`): features the five-action policy leaves out on purpose.
+  - `status` re-filed the already pinned host key under the instance id, without a new console read.
+  - Through Session Manager: `ssh.sh` (sshd saw the connection from `127.0.0.1`), `kubeconfig.sh` (the same
+    file byte for byte), `tunnel.sh` and `kubectl get nodes`.
+  - `close-ssh` removed the port-22 rule. After it: a TCP connect to the Elastic IP on port 22 gets no answer,
+    ssh and kubectl through Session Manager still work, and the store and dashboard answer 200 over HTTPS.
+  - Direct ssh (`VPS_SSH_VIA=direct`) was used, and worked, before the rule was removed. The fresh-launch path
+    (`run-instances` with the instance profile) has not run, as no new instance was created.

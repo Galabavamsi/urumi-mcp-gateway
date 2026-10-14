@@ -8,7 +8,7 @@
 #     the local k3d-urumi context) is never edited, so nothing aims at production by accident
 # The file holds cluster-admin credentials and is never printed.
 #
-# Usage (WSL, from the repo root):  VPS_HOST=<elastic-ip> bash scripts/vps/kubeconfig.sh
+# Usage (WSL, from the repo root):  bash scripts/vps/kubeconfig.sh
 # Then:  export KUBECONFIG=~/.kube/urumi-vps.yaml    (or pass --kubeconfig/--context urumi-vps to kubectl)
 set -euo pipefail
 
@@ -25,7 +25,7 @@ chmod 700 "$dir"
 tmp="$KUBECONFIG_FILE.partial"
 trap 'rm -f "$tmp"' EXIT
 
-step "fetching /etc/rancher/k3s/k3s.yaml from $VPS_HOST"
+step "fetching /etc/rancher/k3s/k3s.yaml from $(vps_route)"
 ( umask 077; vps_ssh 'sudo cat /etc/rancher/k3s/k3s.yaml' > "$tmp" )
 grep -q '^kind: Config' "$tmp" || die "what came back is not a kubeconfig (is k3s installed? run bootstrap-k3s.sh)"
 

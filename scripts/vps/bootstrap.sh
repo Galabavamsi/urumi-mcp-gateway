@@ -2,9 +2,9 @@
 # Runs scripts/vps/bootstrap-k3s.sh on the VPS, over ssh with the host key that provision-aws.sh pinned
 # (scripts/vps/common.sh), so even this first connection refuses a machine that is not ours.
 #
-# Usage (WSL, from the repo root):  VPS_HOST=<elastic-ip> bash scripts/vps/bootstrap.sh
+# Usage (WSL, from the repo root):  bash scripts/vps/bootstrap.sh
 # bootstrap-k3s.sh's optional settings, PUBLIC_IP and NODE_NAME, are passed on from your environment,
-# e.g.  NODE_NAME=urumi-vps VPS_HOST=<elastic-ip> bash scripts/vps/bootstrap.sh
+# e.g.  NODE_NAME=urumi-vps bash scripts/vps/bootstrap.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

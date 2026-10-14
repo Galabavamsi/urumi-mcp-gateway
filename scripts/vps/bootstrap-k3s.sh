@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Turns the fresh Ubuntu 24.04 EC2 instance into a one-node k3s cluster. Runs ON the VPS as the ubuntu
 # user (it calls sudo itself) and is safe to re-run. Started from your machine with:
-#   VPS_HOST=<elastic-ip> bash scripts/vps/bootstrap.sh
+#   bash scripts/vps/bootstrap.sh
 # which sends this file over ssh with the host key provision-aws.sh pinned. Optional settings (environment,
 # passed on by bootstrap.sh):
 #   PUBLIC_IP   put on the API server certificate (default: the instance's public IP from EC2 metadata)
@@ -21,8 +21,8 @@
 # for NetworkPolicies). ufw's default "deny incoming / drop forwarded" policy then silently drops pod and
 # Service traffic unless you add allow rules for the pod and Service ranges (10.42.0.0/16, 10.43.0.0/16),
 # and the two rule sets fight over the same chains on every reload. The AWS security group already
-# filters inbound traffic outside the machine (80/443 from anywhere, 22 from your IP, nothing else; 6443
-# is never open), so ufw would add breakage risk and no protection. k3s's own docs recommend turning it off.
+# filters inbound traffic outside the machine (80/443 from anywhere and nothing else: ssh comes in through
+# Session Manager, and 6443 is never open), so ufw would add breakage risk and no protection. k3s's own docs recommend turning it off.
 set -euo pipefail
 
 K3S_VERSION="v1.36.5+k3s1"
@@ -170,6 +170,7 @@ wait_for_cluster() {
 
 main() {
   local public_ip
+  # shellcheck source=/dev/null
   . /etc/os-release
   [ "${ID:-}" = ubuntu ] || die "expected Ubuntu, found ${PRETTY_NAME:-unknown}"
   [ "${VERSION_ID:-}" = 24.04 ] || echo "  ! tested on Ubuntu 24.04, this is $PRETTY_NAME"
@@ -192,7 +193,6 @@ main() {
   cat <<EOF
 
 Done. Next, on YOUR machine (WSL), from the repo root (docs/VPS.md):
-  export VPS_HOST=$public_ip
   bash scripts/vps/kubeconfig.sh        # fetches the kubeconfig to ~/.kube/urumi-vps.yaml
   bash scripts/vps/tunnel.sh            # in its own terminal: 127.0.0.1:16443 -> the API on the VPS
   bash scripts/vps/install-addons.sh    # namespaces, cert-manager, Let's Encrypt issuers, HTTPS redirect

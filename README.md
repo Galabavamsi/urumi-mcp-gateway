@@ -448,12 +448,12 @@ in `scripts/vps/`:
 
 ```bash
 bash scripts/vps/provision-aws.sh plan    # read-only: what exists, what would be created, the cost
-bash scripts/vps/provision-aws.sh up      # key pair, security group (80/443; 22 from your IP only), t3.large, Elastic IP,
-                                          # and the SSH host key pinned from the console output (no trust on first use)
+bash scripts/vps/provision-aws.sh up      # key pair, Session-Manager-only IAM role, security group (80/443 only), t3.large,
+                                          # Elastic IP, and the SSH host key pinned from the console output (no trust on first use)
 # Cloudflare: A record *.urumi -> the Elastic IP, DNS only (grey cloud)
-bash scripts/vps/bootstrap.sh             # over ssh: k3s, Secrets encryption, SSH hardening
+bash scripts/vps/bootstrap.sh             # over ssh through AWS Session Manager: k3s, Secrets encryption, SSH hardening
 bash scripts/vps/kubeconfig.sh            # ~/.kube/urumi-vps.yaml, context urumi-vps, server 127.0.0.1:16443
-bash scripts/vps/tunnel.sh                # in its own terminal: the SSH tunnel to the API (6443 is never public)
+bash scripts/vps/tunnel.sh                # in its own terminal: the SSH tunnel to the API (neither 6443 nor 22 is public)
 bash scripts/vps/install-addons.sh        # namespaces, cert-manager, Let's Encrypt issuers, HTTP->HTTPS redirect
 bash scripts/vps/deploy.sh                # GHCR tags exist? Secrets, three Helm releases, certificates, HTTPS smoke test
 ```
@@ -467,8 +467,9 @@ In short:
   `cluster/traefik-prod.yaml` makes Traefik redirect all plain HTTP to HTTPS.
 - **Images:** `ghcr.io/galabavamsi/{wordpress,woo-mcp,supplier-mcp,gateway,dashboard}:<git short sha>`, built
   by GitHub Actions; tags are passed with `--set-string`.
-- **Access:** kubectl and Helm from the laptop through an SSH tunnel; the Kubernetes API port (6443) is never
-  public. Secrets are created with the same `scripts/secrets.sh` through that tunnel.
+- **Access:** kubectl and Helm from the laptop through an SSH tunnel, and the ssh itself runs through AWS Systems
+  Manager Session Manager: the security group opens only 80 and 443, so neither the Kubernetes API (6443) nor
+  sshd (22) is reachable from the internet, and a new network or IP needs no rule change. Secrets are created with the same `scripts/secrets.sh` through that tunnel.
 - **Same charts, `values-prod.yaml`:** each chart has one. The differences (hosts, TLS, `COOKIE_SECURE=true`,
   image registry, storage class and sizes) are listed in [DESIGN.md](docs/DESIGN.md#what-changes-for-production).
 
@@ -489,13 +490,16 @@ helm upgrade --install platform charts/platform -n platform -f charts/platform/v
 While the GHCR packages are private, each command also gets `--set 'imagePullSecrets[0].name=ghcr-pull'`
 (`deploy.sh` creates that Secret from `GHCR_PULL_TOKEN`); without it the pods end in `ImagePullBackOff`.
 
-Status: **deployed** on 2026-10-14 with exactly the steps above. `provision-aws.sh up` created the EC2
-instance (Elastic IP, security group with SSH from one IP only, SSH host key pinned from the console output),
+Status: **deployed** on 2026-10-14 with these steps, at that time still over direct ssh to port 22.
+`provision-aws.sh up` created the EC2 instance (Elastic IP, security group with SSH from one IP only, SSH host
+key pinned from the console output),
 `bootstrap.sh` installed k3s with secrets encryption, `install-addons.sh` added cert-manager and the HTTPS
 redirect, and `deploy.sh` installed the three releases from CI's images (both Let's Encrypt certificates issued
 on the first attempt). Against the live hosts, `scripts/e2e-store.mjs` passed **19/19** and
 `scripts/e2e-dod.mjs` passed **16/16**, including the real Claude Code CLI connecting to
-`https://app.urumi.humanslop.in/mcp` with only a member's API key.
+`https://app.urumi.humanslop.in/mcp` with only a member's API key. The same evening ssh moved to Session
+Manager: `provision-aws.sh up` added the `urumi-vps-ssm` role to the running instance, ssh, `kubeconfig.sh`
+and the tunnel were checked through it, and `provision-aws.sh close-ssh` removed the port-22 rule.
 
 ## Stand-out items attempted
 

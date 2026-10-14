@@ -22,7 +22,7 @@ The model provider (Anthropic) is a data processor that receives the chat contex
 | Store data, including customer names, emails, phone numbers, cities and order contents | MariaDB | Reachable only through WordPress; woo-mcp exposes billing name, email, phone and city but never street addresses |
 | Shared credits and reputation (Firecrawl credits, the AgentMail inbox, Anthropic spend) | Third parties | Allowlists, policies, rate limits, approval step, audit |
 | The audit log | Postgres | Written by the gateway only; members read only their own rows |
-| The cluster and the cloud account | Kubernetes, EC2 | NetworkPolicies, SSRF guard, no service-account tokens, no RBAC needed |
+| The cluster and the cloud account | Kubernetes, EC2 | NetworkPolicies, SSRF guard, no service-account tokens, no RBAC needed; admin access only through Session Manager (AWS credentials allowed `ssm:StartSession`; today the root user's access keys on the operator's laptop, a residual risk) plus the SSH key, no inbound port but 80/443; the instance role can only run Session Manager, and IMDSv2 with hop limit 1 keeps pods from its credentials |
 
 ## Trust boundaries
 

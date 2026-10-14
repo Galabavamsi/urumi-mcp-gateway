@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Keeps an SSH tunnel open from 127.0.0.1:16443 on your machine to the kube API on the VPS
 # (127.0.0.1:6443 there). kubectl and helm reach the cluster only through this tunnel: port 6443 is
-# never open in the security group, so the API is not exposed to the internet at all, and the tunnel
-# itself is authenticated with your SSH key and limited to your IP by the SSH rule.
+# never open in the security group, so the API is not exposed to the internet at all. By default the ssh
+# itself runs over Session Manager (common.sh), so port 22 is closed too and your IP does not matter.
 #
-# Usage (WSL, its own terminal; Ctrl-C closes it):  VPS_HOST=<elastic-ip> bash scripts/vps/tunnel.sh
+# Usage (WSL, its own terminal; Ctrl-C closes it):  bash scripts/vps/tunnel.sh
 #   -N                 no remote command, forwarding only
 #   -L a:b:c:d         listen on 127.0.0.1:16443 here (loopback only, so no one else on your network
 #                      can use it) and connect to 127.0.0.1:6443 as seen from the VPS
@@ -20,11 +20,16 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 need ssh
 require_vps_host
 
+if [ "$VPS_SSH_VIA" = ssm ]; then
+  hint="is the instance running, and are your AWS credentials still valid? (provision-aws.sh status)"
+else
+  hint="did your IP change? (provision-aws.sh allow-my-ip)"
+fi
 trap 'echo; echo "tunnel closed"; exit 0' INT TERM
 while true; do
-  echo "tunnel: 127.0.0.1:$TUNNEL_PORT -> $VPS_HOST:127.0.0.1:6443 (Ctrl-C to close)"
+  echo "tunnel: 127.0.0.1:$TUNNEL_PORT -> 127.0.0.1:6443 on the VPS, via $(vps_route) (Ctrl-C to close)"
   ssh "${SSH_OPTS[@]}" -N -o ExitOnForwardFailure=yes \
-    -L "127.0.0.1:$TUNNEL_PORT:127.0.0.1:6443" "$VPS_SSH_USER@$VPS_HOST" || true
-  echo "tunnel: connection lost; reconnecting in 5 s (did your IP change? provision-aws.sh allow-my-ip)"
+    -L "127.0.0.1:$TUNNEL_PORT:127.0.0.1:6443" "$VPS_SSH_USER@$VPS_TARGET" || true
+  echo "tunnel: connection lost; reconnecting in 5 s ($hint)"
   sleep 5
 done
