@@ -153,9 +153,15 @@ helm status platform -n platform | sed -n 's/^\(REVISION\|STATUS\):/  \1:/p'
 
 # --- 5. Done -------------------------------------------------------------------------------------
 step "check"
+# Retried for up to 30 s: right after a rollout Traefik can still send a request to a pod that is
+# shutting down, which answers 502 for a moment.
 check() { # url, expected HTTP status
-  local code
-  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$1" || true)"
+  local code attempt
+  for attempt in $(seq 1 10); do
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$1" || true)"
+    [ "$code" = "$2" ] && break
+    [ "$attempt" -lt 10 ] && sleep 3
+  done
   echo "  GET $1 -> $code"
   [ "$code" = "$2" ] || die "expected $2 from $1 through Traefik"
 }
