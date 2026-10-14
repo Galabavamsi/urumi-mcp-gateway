@@ -7,6 +7,11 @@ Code, Cursor or MCP Inspector, or through the chat agent in the dashboard. Membe
 servers' credentials, and every tool call is written to an audit log under the user who made it. The same
 Helm charts run on a local k3d cluster and on a k3s VPS; only the values files differ.
 
+**Live deployment** (AWS EC2 t3.large in ap-south-1, k3s v1.36.5, Let's Encrypt TLS):
+store <https://store.urumi.humanslop.in> · dashboard <https://app.urumi.humanslop.in> ·
+MCP endpoint `https://app.urumi.humanslop.in/mcp` (needs an API key from the dashboard).
+The instance may be stopped between demos to save credits.
+
 ```mermaid
 flowchart LR
   subgraph outside["Outside the cluster"]
@@ -484,15 +489,19 @@ helm upgrade --install platform charts/platform -n platform -f charts/platform/v
 While the GHCR packages are private, each command also gets `--set 'imagePullSecrets[0].name=ghcr-pull'`
 (`deploy.sh` creates that Secret from `GHCR_PULL_TOKEN`); without it the pods end in `ImagePullBackOff`.
 
-Status: the scripts, production values and CI are written and were rehearsed without AWS (a throwaway k3d
-cluster with Let's Encrypt's Pebble test CA, and an Ubuntu 24.04 stand-in for the VPS). The AWS machine has not
-been created yet, so the public deployment is pending.
+Status: **deployed** on 2026-10-14 with exactly the steps above. `provision-aws.sh up` created the EC2
+instance (Elastic IP, security group with SSH from one IP only, SSH host key pinned from the console output),
+`bootstrap.sh` installed k3s with secrets encryption, `install-addons.sh` added cert-manager and the HTTPS
+redirect, and `deploy.sh` installed the three releases from CI's images (both Let's Encrypt certificates issued
+on the first attempt). Against the live hosts, `scripts/e2e-store.mjs` passed **19/19** and
+`scripts/e2e-dod.mjs` passed **16/16**, including the real Claude Code CLI connecting to
+`https://app.urumi.humanslop.in/mcp` with only a member's API key.
 
 ## Stand-out items attempted
 
 | Item from the brief | Status | Where |
 |---|---|---|
-| Production-like VPS deployment | Partly: everything is scripted and rehearsed (provisioning, k3s bootstrap, SSH-tunnel kubeconfig, cert-manager + Let's Encrypt, deploy with smoke test, CI images on GHCR, nightly backups); the AWS machine itself is not created yet | `scripts/vps/`, `charts/*/values-prod.yaml`, `cluster/`, `.github/workflows/ci.yml`, [docs/VPS.md](docs/VPS.md) |
+| Production-like VPS deployment | Done. Live at `store.urumi.humanslop.in` / `app.urumi.humanslop.in` on EC2 + k3s with Let's Encrypt TLS, CI-built GHCR images and nightly backups; every step scripted (provisioning, k3s bootstrap, SSH-tunnel kubeconfig, cert-manager, deploy with pre-upgrade dump and smoke test), and both end-to-end suites pass against it | `scripts/vps/`, `charts/*/values-prod.yaml`, `cluster/`, `.github/workflows/ci.yml`, [docs/VPS.md](docs/VPS.md) |
 | Tool permissions | Done. Per-role deny rules (server or `*`, tool or `*`); denied tools are hidden from `tools/list` and refused on `tools/call` (audited as `denied`). Default: members cannot create products, change order status or send email. Plus the chat approval step before destructive or outbound tools. | `apps/gateway/src/policies/policy.ts`, `apps/gateway/src/mcp/toolRouter.ts`, Tool policies page (`apps/dashboard/src/pages/PoliciesPage.tsx`), `apps/gateway/src/chat/confirm.ts`, `apps/gateway/src/chat/approvals.ts` |
 | OAuth on the gateway | Not attempted. API keys only; the 401 deliberately carries no `resource_metadata` so clients don't start OAuth discovery. | — |
 | Handling many tools | Not attempted. Only per-server tool allowlists (Firecrawl exposes 3 of its tools, AgentMail 1). | `toolAllowlist` in `charts/platform/values.yaml` |

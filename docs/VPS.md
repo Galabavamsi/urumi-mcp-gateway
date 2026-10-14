@@ -280,6 +280,10 @@ node scripts/e2e-dod.mjs          # the Definition of Done; demo accounts go to 
 
 On Linux or macOS with node and kubectl installed natively, use the same variables without `E2E_WSL`.
 
+Not from Git Bash: Git Bash rewrites environment variables that look like Unix paths before it starts a
+Windows program, so `E2E_KUBECONFIG=/home/...` reaches node as `C:/Program Files/Git/home/...` and every kubectl
+step fails with "no such file". Use PowerShell as above, or `export MSYS2_ENV_CONV_EXCL=E2E_KUBECONFIG` first.
+
 On an https store, check `c6` of `e2e-store.mjs` signs its WooCommerce REST calls through a port-forward to the `wordpress` Service, the same plain in-cluster hop woo-mcp uses. The reason: behind Traefik, WooCommerce verifies OAuth signatures with scheme https, while woo-mcp's signer always uses http.
 
 ## Day-2 operations
