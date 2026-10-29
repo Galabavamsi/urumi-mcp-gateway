@@ -307,7 +307,7 @@ $env:E2E_STORE_URL = 'https://store.urumi.humanslop.in'
 $env:E2E_APP_URL = 'https://app.urumi.humanslop.in'
 $env:E2E_KUBE_CONTEXT = 'urumi-vps'
 $env:E2E_KUBECONFIG = '/home/<wsl-user>/.kube/urumi-vps.yaml'
-node scripts/e2e-store.mjs        # 19 checks; creates and deletes one test product and one guest order
+node scripts/e2e-store.mjs        # 20 checks; creates and deletes one test product and one guest order
 node scripts/e2e-dod.mjs          # the Definition of Done; demo accounts go to notes/demo-accounts.app.urumi.humanslop.in.md
 ```
 
@@ -341,6 +341,7 @@ Everything not listed is identical: templates, NetworkPolicies, probes, security
 
 | Chart / place | Key | Local (`values-local.yaml`, k3d) | Production (`values-prod.yaml`, VPS) |
 |---|---|---|---|
+| woo-store | `store.notice` | empty (no banner) | a "Demo store" banner on every page: the public store looks real but never ships |
 | woo-store | `ingress.host` | `store.127-0-0-1.sslip.io` | `store.urumi.humanslop.in` |
 | woo-store | `ingress.annotations` | none | `cert-manager.io/cluster-issuer: letsencrypt-prod` |
 | woo-store | `ingress.tls.enabled` | `false` | `true` (Secret `woo-store-tls`). This also makes WP_HOME and woo-mcp's `WOO_HOME_URL` `https://store.urumi.humanslop.in`, and the probes send `X-Forwarded-Proto: https` |
@@ -476,6 +477,9 @@ bash scripts/vps/provision-aws.sh down
 
 Afterwards:
 - Remove the Cloudflare `*.urumi` record.
+  - To come back on the same address later, `URUMI_EIP_ADDRESS=<old IP> bash scripts/vps/provision-aws.sh up` re-claims
+    it. AWS allows this only while no other account has been given the address. If that works, add the record again
+    unchanged.
 - Optionally remove `~/.ssh/urumi-vps.pem`, `~/.kube/urumi-vps.yaml` and `.vps/known_hosts` (a new instance is
   pinned again by `up` anyway).
 

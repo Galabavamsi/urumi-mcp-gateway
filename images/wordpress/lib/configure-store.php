@@ -724,6 +724,17 @@ urumi_ensure_options(
 		'woocommerce_enable_guest_checkout' => 'yes',
 	)
 );
+// WooCommerce's store notice (a banner on every page): on with STORE_NOTICE's text, off when it is empty.
+$notice = urumi_env( 'STORE_NOTICE', '' );
+urumi_ensure_options(
+	'store notice',
+	'' === $notice
+		? array( 'woocommerce_demo_store' => 'no' )
+		: array(
+			'woocommerce_demo_store'        => 'yes',
+			'woocommerce_demo_store_notice' => $notice,
+		)
+);
 urumi_ensure_cod();
 urumi_skip_onboarding();
 urumi_ensure_pages();

@@ -10,7 +10,7 @@
 #   WP_HOME                                 public store URL
 #   WP_ADMIN_USER, WP_ADMIN_EMAIL, WP_ADMIN_PASSWORD
 #   WOO_CONSUMER_KEY, WOO_CONSUMER_SECRET   REST API key of the mcp-bot user
-#   STORE_*                                 name, tagline, address, currency, timezone
+#   STORE_*                                 name, tagline, address, currency, timezone, notice
 # The shop's catalog, photos and pages come from the image itself (/usr/local/share/urumi/seed).
 set -Eeuo pipefail
 

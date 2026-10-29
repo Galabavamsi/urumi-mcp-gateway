@@ -44,3 +44,4 @@ data:
   STORE_POSTCODE: {{ .Values.store.postcode | quote }}
   STORE_CURRENCY: {{ .Values.store.currency | quote }}
   STORE_TIMEZONE: {{ .Values.store.timezone | quote }}
+  STORE_NOTICE: {{ .Values.store.notice | quote }}

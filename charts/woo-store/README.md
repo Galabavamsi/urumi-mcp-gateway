@@ -61,6 +61,7 @@ step logs one line (`kubectl -n store logs deploy/wordpress -c bootstrap`):
 5. Enable HPOS with `wp wc hpos enable`.
 6. Run `configure-store.php` in a single WordPress load:
    - store settings: name and tagline (`store.name`, `store.tagline`), Bengaluru address `IN:KA`, INR, `Asia/Kolkata`;
+   - WooCommerce's store notice, a banner on every page, from `store.notice` (empty turns it off; production sets one);
    - coming-soon off, shipping disabled, guest checkout on;
    - Cash on Delivery on, including for orders that need no shipping;
    - onboarding hidden; shop/cart/checkout/my-account pages present;

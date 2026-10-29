@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // End-to-end checks for the store half of the stack, run against the live k3d cluster:
 //   (a) the storefront lists the seeded products and is not in "coming soon" mode
+//   (k) the store notice banner says exactly what the chart value store.notice says, or is absent when it is empty
 //   (b) a guest Cash-on-Delivery checkout through the Store API creates a "processing" order
 //   (c) woo-mcp over real MCP, in BOTH protocol eras (legacy 2025-11-25 and modern 2026-07-28):
 //       tools/list, list_products, create_product (then seen on the storefront; a retry with the same SKU
@@ -382,6 +383,20 @@ async function main() {
     assert(!/coming soon/i.test(home + shop), 'the page says "coming soon"');
     assert(shop.includes('&#8377;'), 'no ₹ symbol on /shop/');
     return [`GET / 200, GET /shop/ 200; listed: ${listed.map((p) => `${p.sku} ₹${p.price}`).join(', ')}`, '"coming soon" appears 0 times'];
+  });
+
+  await check('k', 'the store notice banner matches the chart value store.notice (or is absent when empty)', async () => {
+    const notice = (await kubectl('get', 'configmap', 'wordpress-env', '-n', 'store', '-o', 'jsonpath={.data.STORE_NOTICE}')).trim();
+    const home = await getText(`${STORE_URL}/`);
+    // WooCommerce prints <p class="woocommerce-store-notice demo_store" ...>TEXT <a ...>Dismiss</a></p>.
+    const banner = /<p[^>]*class="woocommerce-store-notice[^"]*"[^>]*>([\s\S]*?)<a /.exec(home)?.[1].trim();
+    if (!notice) {
+      assert(banner === undefined, `store.notice is empty, but / shows a store notice: "${banner}"`);
+      return 'store.notice is empty and / shows no store notice';
+    }
+    assert(banner !== undefined, 'store.notice is set, but / shows no store notice');
+    assert(banner === notice, `the store notice on / says "${banner}", not "${notice}"`);
+    return `store notice on /: "${banner}"`;
   });
 
   await check('b', 'guest Cash-on-Delivery checkout through the Store API creates a processing order', async () => {

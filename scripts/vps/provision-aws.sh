@@ -31,6 +31,9 @@
 # Needs: AWS CLI v2 with credentials (e.g. `export AWS_PROFILE=aws-main`), curl, ssh-keygen.
 # Works in WSL/Linux/macOS and in Git Bash on Windows. Settings (environment):
 #   URUMI_REGION=ap-south-1  URUMI_INSTANCE_TYPE=t3.large  URUMI_DISK_GB=40  VPS_SSH_KEY=~/.ssh/urumi-vps.pem
+#   URUMI_EIP_ADDRESS=<ip>   `up` re-claims this Elastic IP, released earlier (e.g. by `down`), instead of
+#                            allocating a new one, so the DNS record works again unchanged. AWS hands it back
+#                            only while no other account has been given it.
 # The region is passed on every call, so an AWS_REGION/AWS_DEFAULT_REGION set elsewhere never redirects it.
 set -euo pipefail
 # Git Bash on Windows rewrites arguments that look like Unix paths ("/aws/service/...", "/dev/sda1") into
@@ -45,6 +48,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 REGION="$VPS_REGION"   # URUMI_REGION, default ap-south-1 (common.sh)
 INSTANCE_TYPE="${URUMI_INSTANCE_TYPE:-t3.large}"
 DISK_GB="${URUMI_DISK_GB:-40}"
+EIP_ADDRESS="${URUMI_EIP_ADDRESS:-}"
 NAME=urumi-vps       # Name tag of every resource; also the key pair and security group name
 PROJECT=urumi        # the tag that marks our resources: nothing without it is ever touched
 SSM_ROLE="$NAME-ssm" # the instance's IAM role, and the instance profile that carries it
@@ -194,6 +198,9 @@ cmd_plan() {
   fi
   if [ -n "$eip" ]; then
     echo "  Elastic IP:      exists ($(eip_ip "$eip"), $eip), attached to: $(eip_instance "$eip")"
+  elif [ -n "$EIP_ADDRESS" ]; then
+    echo "  Elastic IP:      would RE-CLAIM $EIP_ADDRESS (only possible while no other account holds it) and"
+    echo "                   associate it with the instance"
   else
     echo "  Elastic IP:      would ALLOCATE one and associate it with the instance"
   fi
@@ -429,12 +436,17 @@ wait_for_ssm() { # instance-id [attempts, 10 s apart; default 30]
 }
 
 ensure_elastic_ip() {
-  local alloc attached
+  local alloc attached reclaim=()
   alloc="$(eip_alloc_id)"
   if [ -z "$alloc" ]; then
-    alloc="$(awsq ec2 allocate-address --domain vpc \
-      --tag-specifications "ResourceType=elastic-ip,Tags=[$TAGS]" --query AllocationId)"
+    [ -z "$EIP_ADDRESS" ] || reclaim=(--address "$EIP_ADDRESS")
+    alloc="$(awsq ec2 allocate-address --domain vpc "${reclaim[@]}" \
+      --tag-specifications "ResourceType=elastic-ip,Tags=[$TAGS]" --query AllocationId)" \
+      || die "could not allocate the Elastic IP${EIP_ADDRESS:+ $EIP_ADDRESS: another account may hold it by now. Run
+       again without URUMI_EIP_ADDRESS for a new address, then point the DNS record at it}"
     echo "  + Elastic IP $(eip_ip "$alloc")"
+  elif [ -n "$EIP_ADDRESS" ] && [ "$(eip_ip "$alloc")" != "$EIP_ADDRESS" ]; then
+    die "URUMI_EIP_ADDRESS is $EIP_ADDRESS, but this project already holds the Elastic IP $(eip_ip "$alloc")"
   fi
   attached="$(eip_instance "$alloc")"
   if [ "$attached" = "$INST" ]; then

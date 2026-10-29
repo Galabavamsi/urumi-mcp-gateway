@@ -13,6 +13,10 @@
 # GHCR_PULL_TOKEN and then passes --set imagePullSecrets[0].name=ghcr-pull. Public packages need nothing.
 imagePullSecrets: []
 
+store:
+  # The public store looks like a real shop but never ships: say so on every page, so nobody orders for real.
+  notice: "Demo store: this is a portfolio project, not a real shop. Orders are never shipped or charged, so please don't enter real personal details."
+
 ingress:
   host: store.urumi.humanslop.in
   annotations:
