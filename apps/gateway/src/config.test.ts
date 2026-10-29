@@ -54,7 +54,8 @@ describe('loadConfig', () => {
   });
 
   it('names bad variables without echoing their values', () => {
-    const attempt = () => loadConfig({ ...base, CREDENTIALS_KEY: 'dG9vLXNob3J0', SESSION_SECRET: 'short-secret-value' });
+    // A deliberately invalid key: base64 of "too-short".
+    const attempt = () => loadConfig({ ...base, CREDENTIALS_KEY: 'dG9vLXNob3J0', SESSION_SECRET: 'short-secret-value' }); // gitleaks:allow
     expect(attempt).toThrow(ConfigError);
     expect(attempt).toThrow(/CREDENTIALS_KEY/);
     expect(attempt).toThrow(/SESSION_SECRET/);

@@ -112,8 +112,7 @@ scripts/            setup-wsl-docker.sh, dev-up.sh, secrets.sh, e2e-store.mjs, e
   demo/             upgrade-rollback.sh: the live Helm 4 upgrade and rollback demo
   vps/              production: provision the EC2 machine, install k3s, kubeconfig + SSH tunnel, add-ons, deploy
 .github/            CI: tests, chart validation, and the five images pushed to GHCR (workflows/ci.yml)
-docs/               the documents above; PLAN.md is the original build plan, kept for history (the code and
-                    these documents are authoritative where they differ)
+docs/               the documents above
 ```
 
 Every chart and app has its own README with the details: [charts/platform](charts/platform/README.md),
@@ -143,7 +142,7 @@ through `wsl.exe -d Ubuntu --exec ...` by themselves. If your distro is not name
 1. If Docker Desktop is installed, first turn off its WSL integration for this distro (Docker Desktop >
    Settings > Resources > WSL integration) and quit it: the setup script refuses to run otherwise, because two
    Docker engines would fight over the same `docker` CLI and socket. Docker Desktop is avoided only because it
-   does not start on the author's laptop (Windows error 1920, see [docs/PLAN.md](docs/PLAN.md)); running this
+   does not start on the author's laptop (Windows error 1920, see the header of `scripts/setup-wsl-docker.sh`); running this
    project on Docker Desktop's engine is untested. Then install WSL with Ubuntu, open an Ubuntu terminal and run
    `bash /mnt/<drive>/<path-to-repo>/scripts/setup-wsl-docker.sh`.
    It installs Docker Engine from Docker's apt repository and the pinned kubectl, Helm (both checksum-verified)

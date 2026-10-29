@@ -1,0 +1,4 @@
+# Reviewed gitleaks findings that are not secrets (fingerprint: commit:file:rule:line).
+# apps/gateway/src/config.test.ts: CREDENTIALS_KEY 'dG9vLXNob3J0' is base64 of "too-short", a deliberately
+# invalid key in the test that checks config errors never echo values.
+579e3439bcad538fa47f16b094b308c001704be2:apps/gateway/src/config.test.ts:generic-api-key:54
