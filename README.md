@@ -501,6 +501,15 @@ on the first attempt). Against the live hosts, `scripts/e2e-store.mjs` passed **
 Manager: `provision-aws.sh up` added the `urumi-vps-ssm` role to the running instance, ssh, `kubeconfig.sh`
 and the tunnel were checked through it, and `provision-aws.sh close-ssh` removed the port-22 rule.
 
+Rebuilt on 2026-10-29. Everything had been deleted on 2026-10-28 with `provision-aws.sh down`, and the same
+scripts rebuilt it from nothing:
+- A new instance and a new Elastic IP. AWS refused to give back the old address.
+- `bootstrap.sh`, `install-addons.sh` and `deploy.sh` of commit `92b0062`. That commit also turns on the store's
+  demo-store banner (`store.notice` in `values-prod.yaml`): the shop looks real but never ships an order.
+- Both Let's Encrypt certificates were issued once the DNS record pointed at the new address.
+- Against the live hosts, `scripts/e2e-store.mjs` passed **20/20** and `scripts/e2e-dod.mjs` passed **16/16**,
+  again including the real Claude Code CLI.
+
 ## Stand-out items attempted
 
 | Item from the brief | Status | Where |
